@@ -91,6 +91,23 @@ meta flag. Support both shapes.
 
 5. Insert the generated image as a new tldraw image shape.
 
+   Prefer the Cowart MCP `insert_cowart_image` tool over hand-writing tldraw
+   records and fractional `index` keys. The tool copies the bitmap into the
+   page-local assets folder, builds the asset and shape, and saves through the
+   running Cowart service:
+
+   - Holder workflow: pass the holder as `anchorShapeId` with `fillAnchor: true`.
+     For a `frame` holder the image is added as a child at `0,0` sized to the
+     frame; for a legacy `geo` holder it overlays the holder's position, size,
+     and rotation. The tool sets `meta.cowartGeneratedForAiImageHolder` to the
+     holder id automatically.
+   - Standalone workflow: omit `fillAnchor`. Pass a non-holder `anchorShapeId`
+     (or `placement`) to place the image beside that shape, or only `pageId` to
+     drop it into a clear area on the current page.
+
+   If the MCP tool is unavailable, fall back to writing records by hand using
+   the contracts below.
+
    For the holder workflow, place it exactly over the holder:
 
    - `type`: `image`

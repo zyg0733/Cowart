@@ -209,6 +209,14 @@ async function saveCanvasSnapshot(cowartUrl, snapshot) {
   });
 }
 
+async function mergeCanvasRecords(cowartUrl, patch) {
+  return fetchJson(`${cowartUrl}/api/canvas/records`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
 function getRecord(store, id, label) {
   const record = store[id];
   if (!record) throw new Error(`Missing ${label}: ${id}`);
@@ -348,12 +356,30 @@ async function getImageDimensions(filePath) {
       offset += 2 + size;
     }
   }
-  if (buffer.length >= 30 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+  if (buffer.length >= 16 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
     const chunk = buffer.toString("ascii", 12, 16);
-    if (chunk === "VP8X") {
+    if (chunk === "VP8X" && buffer.length >= 30) {
       return {
         width: 1 + buffer.readUIntLE(24, 3),
         height: 1 + buffer.readUIntLE(27, 3),
+      };
+    }
+    // Lossy WebP: VP8 bitstream with start code 0x9d 0x01 0x2a, then 14-bit LE dims.
+    if (chunk === "VP8 " && buffer.length >= 30 && buffer[23] === 0x9d && buffer[24] === 0x01 && buffer[25] === 0x2a) {
+      return {
+        width: buffer.readUInt16LE(26) & 0x3fff,
+        height: buffer.readUInt16LE(28) & 0x3fff,
+      };
+    }
+    // Lossless WebP: VP8L, signature byte 0x2f, then 14-bit (width-1) and (height-1).
+    if (chunk === "VP8L" && buffer.length >= 25 && buffer[20] === 0x2f) {
+      const b1 = buffer[21];
+      const b2 = buffer[22];
+      const b3 = buffer[23];
+      const b4 = buffer[24];
+      return {
+        width: 1 + (b1 | ((b2 & 0x3f) << 8)),
+        height: 1 + (((b2 & 0xc0) >> 6) | (b3 << 2) | ((b4 & 0x0f) << 10)),
       };
     }
   }
@@ -382,18 +408,85 @@ async function insertCowartImage(args = {}) {
     Object.values(store).find((record) => record?.typeName === "page")?.id;
   if (!pageId || !store[pageId]) throw new Error("Could not determine target pageId.");
 
-  const parentId = anchorShape?.parentId && store[anchorShape.parentId]?.typeName === "page" ? anchorShape.parentId : pageId;
-  const imageSize = await getImageDimensions(sourceImagePath);
+  const fillAnchor = args.fillAnchor === true && Boolean(anchorShape);
+  const anchorIsFrame = anchorShape?.type === "frame";
+
+  // Holder fill: image becomes a child of (frame holder) or an overlay on
+  // (legacy geo holder) the anchor. Otherwise it is placed beside the anchor.
+  const parentId = fillAnchor
+    ? anchorIsFrame
+      ? anchorShape.id
+      : nonEmptyString(anchorShape.parentId) ?? pageId
+    : anchorShape?.parentId && store[anchorShape.parentId]?.typeName === "page"
+      ? anchorShape.parentId
+      : pageId;
+  if (!store[parentId]) throw new Error(`Could not determine target parent: ${parentId}`);
+
+  let imageSize = null;
+  try {
+    imageSize = await getImageDimensions(sourceImagePath);
+  } catch {
+    imageSize = null; // fall back to anchor / explicit dimensions below
+  }
+
   const anchorBounds = anchorShape ? pageBoundsForShape(store, anchorShape) : null;
-  const matchAnchor = args.matchAnchor !== false && anchorBounds;
-  const width = finiteNumber(args.displayWidth, matchAnchor ? anchorBounds.w : Math.min(imageSize.width, 512));
-  const height = finiteNumber(
-    args.displayHeight,
-    matchAnchor ? anchorBounds.h : Math.round(width * (imageSize.height / imageSize.width))
-  );
+  const matchAnchor = args.matchAnchor !== false && Boolean(anchorBounds);
+  const explicitWidth = finiteNumber(args.displayWidth, null);
+  const explicitHeight = finiteNumber(args.displayHeight, null);
+  // Holder fill uses the holder's own (local) size; beside-placement matches the
+  // anchor's page bounds. Explicit display dimensions always win.
+  const holderWidth = finiteNumber(anchorShape?.props?.w, null);
+  const holderHeight = finiteNumber(anchorShape?.props?.h, null);
+
+  let width;
+  let height;
+  if (fillAnchor) {
+    width = explicitWidth ?? holderWidth ?? anchorBounds?.w ?? (imageSize ? Math.min(imageSize.width, 512) : null);
+    height =
+      explicitHeight ??
+      holderHeight ??
+      anchorBounds?.h ??
+      (imageSize && width ? Math.round(width * (imageSize.height / imageSize.width)) : null);
+  } else if (matchAnchor) {
+    width = explicitWidth ?? anchorBounds.w;
+    height = explicitHeight ?? anchorBounds.h;
+  } else if (imageSize) {
+    width = explicitWidth ?? Math.min(imageSize.width, 512);
+    height = explicitHeight ?? Math.round(width * (imageSize.height / imageSize.width));
+  } else if (explicitWidth && explicitHeight) {
+    width = explicitWidth;
+    height = explicitHeight;
+  }
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new Error(
+      `Could not determine display size for ${sourceImagePath}. Provide displayWidth and displayHeight, anchor to an existing shape, or use a PNG/JPEG/WebP source.`
+    );
+  }
+  const naturalSize = imageSize ?? { width: Math.round(width), height: Math.round(height) };
+
   const margin = Math.max(0, finiteNumber(args.margin, 40));
   const placement = ["right", "left", "below"].includes(args.placement) ? args.placement : "right";
-  const bounds = choosePlacement({ store, pageId, parentId, anchorShape, width, height, margin, placement });
+
+  let posX;
+  let posY;
+  let rotation;
+  if (fillAnchor) {
+    if (anchorIsFrame) {
+      posX = 0;
+      posY = 0;
+      rotation = 0;
+    } else {
+      posX = finiteNumber(anchorShape.x, 0);
+      posY = finiteNumber(anchorShape.y, 0);
+      rotation = finiteNumber(anchorShape.rotation, 0);
+    }
+  } else {
+    const placed = choosePlacement({ store, pageId, parentId, anchorShape, width, height, margin, placement });
+    posX = placed.x;
+    posY = placed.y;
+    rotation = 0;
+  }
+  const bounds = { x: posX, y: posY, w: width, h: height };
 
   const canvasDir = resolveCanvasDir(args);
   const assetsDir = join(canvasDir, "pages", pageDirName(pageId), "assets");
@@ -414,8 +507,8 @@ async function insertCowartImage(args = {}) {
     props: {
       name: fileName,
       src: pageAssetUrl(pageId, fileName),
-      w: imageSize.width,
-      h: imageSize.height,
+      w: naturalSize.width,
+      h: naturalSize.height,
       fileSize: sourceStat.size,
       mimeType,
       isAnimated: false,
@@ -424,7 +517,10 @@ async function insertCowartImage(args = {}) {
   };
 
   const shapeMeta = args.shapeMeta && typeof args.shapeMeta === "object" ? { ...args.shapeMeta } : {};
-  if (anchorShapeId && !shapeMeta.cowartAnnotationSourceShapeId) {
+  if (fillAnchor && anchorShapeId && !shapeMeta.cowartGeneratedForAiImageHolder) {
+    shapeMeta.cowartGeneratedForAiImageHolder = anchorShapeId;
+  }
+  if (!fillAnchor && anchorShapeId && !shapeMeta.cowartAnnotationSourceShapeId) {
     shapeMeta.cowartAnnotationSourceShapeId = anchorShapeId;
   }
   if (nonEmptyString(args.annotationScreenshot) && !shapeMeta.cowartAnnotationScreenshot) {
@@ -434,7 +530,7 @@ async function insertCowartImage(args = {}) {
   const shapeRecord = {
     x: bounds.x,
     y: bounds.y,
-    rotation: 0,
+    rotation,
     isLocked: false,
     opacity: 1,
     meta: shapeMeta,
@@ -459,9 +555,21 @@ async function insertCowartImage(args = {}) {
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
     await copyFile(sourceImagePath, filePath);
-    store[assetId] = assetRecord;
-    store[shapeId] = shapeRecord;
-    await saveCanvasSnapshot(cowartUrl, snapshot);
+    try {
+      // Merge just the new records into the server's current snapshot so a
+      // concurrent browser save is not overwritten by our stale read.
+      await mergeCanvasRecords(cowartUrl, { put: [assetRecord, shapeRecord] });
+    } catch (mergeError) {
+      // Older Cowart servers lack the merge endpoint: fall back to a full
+      // snapshot save (reintroduces the read-modify-write window).
+      try {
+        store[assetId] = assetRecord;
+        store[shapeId] = shapeRecord;
+        await saveCanvasSnapshot(cowartUrl, snapshot);
+      } catch {
+        throw mergeError;
+      }
+    }
   }
 
   return {
@@ -475,7 +583,8 @@ async function insertCowartImage(args = {}) {
     sourceImagePath,
     assetFile: filePath,
     assetUrl: assetRecord.props.src,
-    imageSize,
+    imageSize: naturalSize,
+    fillAnchor,
     bounds,
     dryRun: Boolean(args.dryRun),
   };
@@ -525,9 +634,14 @@ function toolDefinitions() {
           anchorShapeId: { type: "string", description: "Existing shape id to place beside, usually the source image or AI frame." },
           sourceShapeId: { type: "string", description: "Alias for anchorShapeId." },
           fileName: { type: "string", description: "Optional destination filename under the page assets folder." },
-          placement: { type: "string", enum: ["right", "left", "below"], description: "Placement direction from the anchor." },
+          placement: { type: "string", enum: ["right", "left", "below"], description: "Placement direction from the anchor. Ignored when fillAnchor is true." },
           margin: { type: "number", description: "Canvas units between the new image and nearby shapes. Defaults to 40." },
           matchAnchor: { type: "boolean", description: "Use the anchor display size when possible. Defaults to true." },
+          fillAnchor: {
+            type: "boolean",
+            description:
+              "Fill the anchor instead of placing beside it: for an AI 图片 frame holder the image is added as a child at 0,0 sized to the frame; for a legacy geo holder it overlays the holder's position, size, and rotation. Use for the image-gen holder workflow. Defaults to false.",
+          },
           displayWidth: { type: "number", description: "Displayed shape width in canvas units." },
           displayHeight: { type: "number", description: "Displayed shape height in canvas units." },
           altText: { type: "string", description: "Image shape alt text." },

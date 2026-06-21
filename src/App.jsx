@@ -41,8 +41,9 @@ import {
 } from 'tldraw'
 import { AllSelection } from '@tiptap/pm/state'
 import 'tldraw/tldraw.css'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
+import { diffRemoteSnapshot, isCanvasSnapshot, storeDiffersFromBaseline } from './canvasSync.js'
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
@@ -71,49 +72,33 @@ const annotationToolIcon = (
   />
 )
 
-function isCanvasSnapshot(value) {
-  return value && typeof value === 'object' && value.store && value.schema
-}
-
-function recordsAreEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
-
-function storeChangedSinceSnapshot(editor, baselineStore) {
-  const currentStore = editor.store.getStoreSnapshot().store
-  const baselineIds = new Set(Object.keys(baselineStore))
-
-  for (const [id, baselineRecord] of Object.entries(baselineStore)) {
-    const currentRecord = currentStore[id]
-    if (!currentRecord) return true
-    if (!recordsAreEqual(currentRecord, baselineRecord)) return true
-  }
-
-  for (const id of Object.keys(currentStore)) {
-    if (!baselineIds.has(id)) return true
-  }
-
-  return false
-}
-
 function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = false } = {}) {
   if (!isCanvasSnapshot(snapshot)) return 0
 
   const migratedSnapshot = editor.store.migrateSnapshot(snapshot)
-  const recordsToPut = Object.values(migratedSnapshot.store).filter((record) => {
-    const localRecord = editor.store.get(record.id)
-    if (!localRecord) return true
-    if (preserveLocalChanges) return false
-    return !recordsAreEqual(localRecord, record)
-  })
+  const { recordsToPut, idsToRemove, switchToPageId } = diffRemoteSnapshot(
+    editor.store.getStoreSnapshot().store,
+    migratedSnapshot.store,
+    { preserveLocalChanges, currentPageId: editor.getCurrentPageId() }
+  )
 
-  if (recordsToPut.length === 0) return 0
+  if (recordsToPut.length === 0 && idsToRemove.length === 0) return 0
 
-  editor.store.mergeRemoteChanges(() => {
-    editor.store.put(recordsToPut)
-  })
+  // Apply additions/updates first so a surviving page we may switch to exists.
+  if (recordsToPut.length > 0) {
+    editor.store.mergeRemoteChanges(() => {
+      editor.store.put(recordsToPut)
+    })
+  }
 
-  return recordsToPut.length
+  if (idsToRemove.length > 0) {
+    if (switchToPageId) editor.setCurrentPage(switchToPageId)
+    editor.store.mergeRemoteChanges(() => {
+      editor.store.remove(idsToRemove)
+    })
+  }
+
+  return recordsToPut.length + idsToRemove.length
 }
 
 function getAiImageHolderMeta() {
@@ -684,6 +669,7 @@ export default function App() {
   const [snapshot, setSnapshot] = useState()
   const [viewState, setViewState] = useState()
   const [loadError, setLoadError] = useState(null)
+  const revisionRef = useRef(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -704,6 +690,7 @@ export default function App() {
           canvasResponse.json(),
           viewStateResponse.json()
         ])
+        revisionRef.current = canvasData.revision ?? null
         setSnapshot(canvasData.snapshot ?? null)
         setViewState(viewStateData.viewState ?? null)
       } catch (error) {
@@ -830,15 +817,29 @@ export default function App() {
 
       isSaving = true
       try {
-        const body = JSON.stringify(editor.store.getStoreSnapshot())
+        const body = JSON.stringify({
+          snapshot: editor.store.getStoreSnapshot(),
+          baseRevision: revisionRef.current
+        })
         const response = await fetch(CANVAS_ENDPOINT, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body
         })
+        if (response.status === 409) {
+          // Someone else wrote since our last load/save. Merge their changes in
+          // (keeping our local edits) and retry with the new base revision.
+          const conflict = await response.json()
+          revisionRef.current = conflict.revision ?? revisionRef.current
+          applyRemoteCanvasSnapshot(editor, conflict.snapshot, { preserveLocalChanges: true })
+          hasPendingSave = true
+          return
+        }
         if (!response.ok) {
           throw new Error(`Failed to save canvas: ${response.status}`)
         }
+        const result = await response.json()
+        revisionRef.current = result.revision ?? revisionRef.current
         hasUnsavedChanges = false
       } catch (error) {
         console.error(error)
@@ -873,10 +874,12 @@ export default function App() {
 
         const canvasData = await response.json()
         const effectivePreserve =
-          preserveLocalChanges || (preFetchStore && storeChangedSinceSnapshot(editor, preFetchStore))
+          preserveLocalChanges ||
+          (preFetchStore && storeDiffersFromBaseline(editor.store.getStoreSnapshot().store, preFetchStore))
         const changedRecords = applyRemoteCanvasSnapshot(editor, canvasData.snapshot, {
           preserveLocalChanges: effectivePreserve
         })
+        revisionRef.current = canvasData.revision ?? revisionRef.current
 
         if (changedRecords > 0 && effectivePreserve) {
           hasUnsavedChanges = true
@@ -904,7 +907,17 @@ export default function App() {
     let canvasEvents = null
     if ('EventSource' in window) {
       canvasEvents = new EventSource(CANVAS_EVENTS_ENDPOINT)
-      canvasEvents.addEventListener('canvas-changed', loadRemoteCanvasSnapshot)
+      canvasEvents.addEventListener('canvas-changed', (event) => {
+        let payloadRevision = null
+        try {
+          payloadRevision = JSON.parse(event.data)?.revision ?? null
+        } catch {
+          payloadRevision = null
+        }
+        // Skip the reload for a revision we already hold (typically our own save).
+        if (payloadRevision !== null && payloadRevision === revisionRef.current) return
+        loadRemoteCanvasSnapshot()
+      })
       canvasEvents.onerror = (error) => {
         console.warn('Cowart canvas live refresh disconnected.', error)
       }

@@ -9,6 +9,7 @@ const canvasDir = resolve(process.env.COWART_CANVAS_DIR ?? join(projectDir, 'can
 const canvasFile = join(canvasDir, 'cowart-canvas.json')
 const selectionFile = join(canvasDir, 'cowart-selection.json')
 const viewStateFile = join(canvasDir, 'cowart-view-state.json')
+const revisionFile = join(canvasDir, 'cowart-canvas-revision.json')
 const canvasPagesDir = join(canvasDir, 'pages')
 const canvasAssetsDir = join(canvasDir, 'assets')
 const pagesManifestFile = join(canvasPagesDir, 'manifest.json')
@@ -18,6 +19,19 @@ const globalAssetsRoute = '/assets/'
 const pageAssetsRoute = '/page-assets/'
 const canvasEventClients = new Set()
 let canvasEventVersion = 0
+let canvasRevision = null
+
+// Serialize every canvas mutation. Without this, a browser full-snapshot save
+// and an MCP merge can interleave their multi-file writes and revision bumps.
+let canvasWriteChain = Promise.resolve()
+function withCanvasWriteLock(task) {
+  const run = canvasWriteChain.then(task, task)
+  canvasWriteChain = run.then(
+    () => {},
+    () => {}
+  )
+  return run
+}
 
 const mimeTypes = new Map([
   ['.apng', 'image/apng'],
@@ -45,6 +59,7 @@ function sendCanvasEvent(res, payload) {
 function broadcastCanvasChanged(result) {
   const payload = {
     version: ++canvasEventVersion,
+    revision: result.revision ?? null,
     updatedAt: new Date().toISOString(),
     storage: result.storage,
     paths: result.paths
@@ -243,24 +258,28 @@ function parseDataUrl(src) {
 }
 
 function localAssetFilePathFromUrl(src) {
-  let route = null
-  let baseDir = null
   if (src.startsWith(globalAssetsRoute)) {
-    route = globalAssetsRoute
-    baseDir = canvasAssetsDir
-  } else if (src.startsWith(pageAssetsRoute)) {
-    const parts = src.slice(pageAssetsRoute.length).split('/')
-    const pageDir = decodeURIComponent(parts.shift() ?? '')
-    if (!pageDir || parts.length === 0) return null
-    const filePath = resolve(join(canvasPagesDir, pageDir, 'assets'), ...parts.map(decodeURIComponent))
-    return isSafeChildPath(join(canvasPagesDir, pageDir, 'assets'), filePath) ? filePath : null
-  } else {
-    return null
+    const requestedPath = decodeURIComponent(src.slice(globalAssetsRoute.length))
+    const filePath = resolve(canvasAssetsDir, requestedPath)
+    return isSafeChildPath(canvasAssetsDir, filePath) ? filePath : null
   }
 
-  const requestedPath = decodeURIComponent(src.slice(route.length))
-  const filePath = resolve(baseDir, requestedPath)
-  return isSafeChildPath(baseDir, filePath) ? filePath : null
+  if (src.startsWith(pageAssetsRoute)) {
+    const segments = src
+      .slice(pageAssetsRoute.length)
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+    const [pageDir, ...assetParts] = segments
+    if (!pageDir || assetParts.length === 0) return null
+
+    // Resolve against the fixed pages root and validate the *final* path stays
+    // inside it. Validating against a parent derived from the (decoded,
+    // attacker-controlled) page segment would let an encoded "../" escape.
+    const filePath = resolve(canvasPagesDir, pageDir, 'assets', ...assetParts)
+    return isSafeChildPath(canvasPagesDir, filePath) ? filePath : null
+  }
+
+  return null
 }
 
 async function localizePageAsset(asset, pageId) {
@@ -371,11 +390,43 @@ async function loadCanvasSnapshot() {
   }
 }
 
+let atomicWriteCounter = 0
+
 async function writeJsonAtomic(filePath, payload) {
   await mkdir(dirname(filePath), { recursive: true })
-  const tempFile = `${filePath}.${process.pid}.tmp`
-  await writeFile(tempFile, `${JSON.stringify(payload, null, 2)}\n`)
-  await rename(tempFile, filePath)
+  // Unique temp name per write: same-file concurrent writers (e.g. an MCP
+  // insert racing the browser auto-save) must not share a temp path, or one
+  // rename clobbers the other's bytes and the second rename throws ENOENT.
+  const tempFile = `${filePath}.${process.pid}.${Date.now()}.${atomicWriteCounter++}.tmp`
+  try {
+    await writeFile(tempFile, `${JSON.stringify(payload, null, 2)}\n`)
+    await rename(tempFile, filePath)
+  } catch (error) {
+    await rm(tempFile, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
+async function loadCanvasRevision() {
+  if (canvasRevision !== null) return canvasRevision
+  try {
+    const stored = await readJsonFile(revisionFile)
+    canvasRevision = Number.isInteger(stored?.revision) ? stored.revision : 0
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      // A corrupt revision file should not wedge saving; start fresh.
+      console.warn('Cowart: could not read canvas revision file, resetting to 0.', error)
+    }
+    canvasRevision = 0
+  }
+  return canvasRevision
+}
+
+async function bumpCanvasRevision() {
+  const next = (await loadCanvasRevision()) + 1
+  canvasRevision = next
+  await writeJsonAtomic(revisionFile, { revision: next })
+  return next
 }
 
 async function removeStalePageDirs(currentPageIds) {
@@ -585,25 +636,99 @@ function canvasStoragePlugin() {
         }
       })
 
+      // Additive/merge writes: merge the given records into the *current*
+      // persisted snapshot under the write lock. Used by the MCP so an insert
+      // never clobbers concurrent browser edits. Registered before /api/canvas
+      // because connect matches /api/canvas as a prefix of this path.
+      server.middlewares.use('/api/canvas/records', async (req, res) => {
+        try {
+          if (req.method !== 'PUT' && req.method !== 'POST') {
+            res.statusCode = 405
+            res.setHeader('allow', 'PUT, POST')
+            res.end()
+            return
+          }
+
+          const body = await readRequestBody(req)
+          const patch = JSON.parse(body)
+          const putRecords = Array.isArray(patch?.put) ? patch.put.filter((record) => record?.id) : []
+          const removeIds = Array.isArray(patch?.remove) ? patch.remove.filter((id) => typeof id === 'string') : []
+          if (putRecords.length === 0 && removeIds.length === 0) {
+            sendJson(res, 400, { error: 'Expected { put: [...records], remove: [...ids] }.' })
+            return
+          }
+
+          const outcome = await withCanvasWriteLock(async () => {
+            const loaded = await loadCanvasSnapshot()
+            if (!isSnapshot(loaded.snapshot)) {
+              return { status: 409, body: { error: 'No canvas to merge into yet. Save a snapshot first.' } }
+            }
+            const snapshot = loaded.snapshot
+            for (const id of removeIds) delete snapshot.store[id]
+            for (const record of putRecords) snapshot.store[record.id] = record
+
+            const result = await saveCanvasSnapshot(snapshot)
+            const revision = await bumpCanvasRevision()
+            return {
+              status: 200,
+              body: { ok: true, revision, put: putRecords.length, remove: removeIds.length, ...result },
+              broadcast: { ...result, revision }
+            }
+          })
+
+          sendJson(res, outcome.status, outcome.body)
+          if (outcome.broadcast) broadcastCanvasChanged(outcome.broadcast)
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
       server.middlewares.use('/api/canvas', async (req, res) => {
         try {
           if (req.method === 'GET') {
             const result = await loadCanvasSnapshot()
-            sendJson(res, 200, result)
+            const revision = await loadCanvasRevision()
+            sendJson(res, 200, { ...result, revision })
             return
           }
 
           if (req.method === 'PUT') {
             const body = await readRequestBody(req)
-            const snapshot = JSON.parse(body)
-            if (!snapshot || typeof snapshot !== 'object' || !snapshot.store || !snapshot.schema) {
+            const payload = JSON.parse(body)
+            // Accept a raw snapshot (legacy/curl fallback) or
+            // { snapshot, baseRevision } for optimistic concurrency.
+            const snapshot = isSnapshot(payload) ? payload : payload?.snapshot
+            const baseRevision = isSnapshot(payload) ? undefined : payload?.baseRevision
+            if (!isSnapshot(snapshot)) {
               sendJson(res, 400, { error: 'Expected a tldraw store snapshot.' })
               return
             }
 
-            const result = await saveCanvasSnapshot(snapshot)
-            sendJson(res, 200, { ok: true, ...result })
-            broadcastCanvasChanged(result)
+            const outcome = await withCanvasWriteLock(async () => {
+              const current = await loadCanvasRevision()
+              if (baseRevision !== undefined && Number(baseRevision) !== current) {
+                const loaded = await loadCanvasSnapshot()
+                return {
+                  status: 409,
+                  body: {
+                    error: 'Canvas revision conflict.',
+                    revision: current,
+                    snapshot: loaded.snapshot,
+                    storage: loaded.storage
+                  }
+                }
+              }
+              const result = await saveCanvasSnapshot(snapshot)
+              const revision = await bumpCanvasRevision()
+              return {
+                status: 200,
+                body: { ok: true, revision, ...result },
+                broadcast: { ...result, revision }
+              }
+            })
+
+            sendJson(res, outcome.status, outcome.body)
+            if (outcome.broadcast) broadcastCanvasChanged(outcome.broadcast)
             return
           }
 

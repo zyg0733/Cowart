@@ -1249,6 +1249,49 @@ function maxSiblingIndex(store, parentId) {
   return indexes.at(-1) ?? null;
 }
 
+function shapeCenter(store, shape) {
+  const bounds = pageBoundsForShape(store, shape);
+  return bounds ? { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 } : null;
+}
+
+// For an arrow spec with fromId/toId, place the arrow's terminals at the bound
+// nodes' centers so it looks right immediately; bindings keep it correct on move.
+function resolveArrowConnection(store, spec) {
+  const fromId = nonEmptyString(spec.fromId);
+  const toId = nonEmptyString(spec.toId);
+  if (!fromId && !toId) return null;
+  const fromShape = fromId ? store[fromId] : null;
+  const toShape = toId ? store[toId] : null;
+  if (fromId && (!fromShape || fromShape.typeName !== "shape")) throw new Error(`connect fromId is not a shape: ${fromId}`);
+  if (toId && (!toShape || toShape.typeName !== "shape")) throw new Error(`connect toId is not a shape: ${toId}`);
+
+  const fromCenter = fromShape ? shapeCenter(store, fromShape) : null;
+  const toCenter = toShape ? shapeCenter(store, toShape) : null;
+  const origin = fromCenter ?? { x: finiteNumber(spec.x, 0), y: finiteNumber(spec.y, 0) };
+  const start = fromCenter ? { x: 0, y: 0 } : spec.start && typeof spec.start === "object" ? spec.start : { x: 0, y: 0 };
+  const end = toCenter
+    ? { x: toCenter.x - origin.x, y: toCenter.y - origin.y }
+    : spec.end && typeof spec.end === "object"
+      ? spec.end
+      : { x: 100, y: 0 };
+  return { x: origin.x, y: origin.y, start, end, bindFrom: fromId || null, bindTo: toId || null };
+}
+
+function makeArrowBinding(store, arrowId, targetId, terminal) {
+  const id = uniqueRecordId(store, "binding", terminal);
+  const record = {
+    id,
+    typeName: "binding",
+    type: "arrow",
+    fromId: arrowId,
+    toId: targetId,
+    props: { terminal, normalizedAnchor: { x: 0.5, y: 0.5 }, isExact: false, isPrecise: false, snap: "none" },
+    meta: {},
+  };
+  store[id] = record; // reserve the id
+  return record;
+}
+
 async function addCowartShapes(args = {}) {
   const specs = Array.isArray(args.shapes) ? args.shapes : args.shape ? [args.shape] : [];
   if (specs.length === 0) throw new Error("Provide a non-empty 'shapes' array.");
@@ -1267,6 +1310,7 @@ async function addCowartShapes(args = {}) {
   const lastIndexByParent = new Map();
   const records = [];
   const created = [];
+  const bindings = [];
 
   for (const spec of specs) {
     const type = nonEmptyString(spec?.type);
@@ -1282,24 +1326,47 @@ async function addCowartShapes(args = {}) {
     const index = generateKeyBetween(prevIndex, null);
     lastIndexByParent.set(parentId, index);
 
+    // An arrow with fromId/toId connects nodes: position it at their centers and
+    // emit binding records so it follows when a node moves.
+    const connection = type === "arrow" ? resolveArrowConnection(store, spec) : null;
+    const effSpec = connection ? { ...spec, x: connection.x, y: connection.y, start: connection.start, end: connection.end } : spec;
+
     const shapeId = uniqueRecordId(store, "shape", sanitizeIdPart(type, "shape"));
     const record = {
       id: shapeId,
       typeName: "shape",
       type,
-      x: finiteNumber(spec.x, 0),
-      y: finiteNumber(spec.y, 0),
-      rotation: finiteNumber(spec.rotation, 0),
+      x: finiteNumber(effSpec.x, 0),
+      y: finiteNumber(effSpec.y, 0),
+      rotation: finiteNumber(effSpec.rotation, 0),
       index,
       parentId,
       isLocked: spec.isLocked === true,
       opacity: Math.min(1, Math.max(0, finiteNumber(spec.opacity, 1))),
       meta: spec.meta && typeof spec.meta === "object" ? spec.meta : {},
-      props: build(spec),
+      props: build(effSpec),
     };
     store[shapeId] = record; // reserve the id so the next uniqueRecordId differs
     records.push(record);
-    created.push({ id: shapeId, type, parentId, index });
+    const createdEntry = { id: shapeId, type, parentId, index };
+
+    if (connection) {
+      const bound = [];
+      if (connection.bindFrom) {
+        const b = makeArrowBinding(store, shapeId, connection.bindFrom, "start");
+        records.push(b);
+        bindings.push(b.id);
+        bound.push({ terminal: "start", toId: connection.bindFrom, bindingId: b.id });
+      }
+      if (connection.bindTo) {
+        const b = makeArrowBinding(store, shapeId, connection.bindTo, "end");
+        records.push(b);
+        bindings.push(b.id);
+        bound.push({ terminal: "end", toId: connection.bindTo, bindingId: b.id });
+      }
+      if (bound.length > 0) createdEntry.bindings = bound;
+    }
+    created.push(createdEntry);
   }
 
   if (!args.dryRun) {
@@ -1310,7 +1377,8 @@ async function addCowartShapes(args = {}) {
     cowartUrl,
     pageId: defaultPageId,
     created,
-    count: records.length,
+    count: created.length,
+    bindingCount: bindings.length,
     records: args.dryRun ? records : undefined,
     dryRun: Boolean(args.dryRun),
   };
@@ -1509,7 +1577,7 @@ function toolDefinitions() {
       name: TOOL_ADD_SHAPES,
       title: "Add Cowart Shapes",
       description:
-        "Create tldraw shapes on the canvas so the agent can author diagrams, labels, and layouts (flowcharts, callouts, sticky notes). Supported types: text, geo (rectangle/ellipse/diamond/etc.), note (sticky), line, arrow. Records are built and validated against the tldraw schema, so no browser is required.",
+        "Create tldraw shapes on the canvas so the agent can author diagrams, labels, and layouts (flowcharts, callouts, sticky notes). Supported types: text, geo (rectangle/ellipse/diamond/etc.), note (sticky), line, arrow. An arrow with fromId/toId becomes a bound connector between those node shapes — it is auto-positioned to their centers and follows them when moved. Records are built and validated against the tldraw schema, so no browser is required.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1521,7 +1589,7 @@ function toolDefinitions() {
           shapes: {
             type: "array",
             description:
-              "Shapes to create. Each item: { type, x, y, rotation?, parentId?, meta?, text?, color?, size?, font? } plus type-specific fields. geo: { geo, w, h, fill, dash, align, verticalAlign, labelColor }. text: { w, textAlign, autoSize }. note: sticky (fixed size). line: { points:[{x,y},...], spline, dash }. arrow: { start:{x,y}, end:{x,y}, bend, arrowheadStart, arrowheadEnd, kind }. Coordinates are page-space; arrow/line start/end/points are relative to the shape's x,y. Unknown style values fall back to defaults.",
+              "Shapes to create. Each item: { type, x, y, rotation?, parentId?, meta?, text?, color?, size?, font? } plus type-specific fields. geo: { geo, w, h, fill, dash, align, verticalAlign, labelColor }. text: { w, textAlign, autoSize }. note: sticky (fixed size). line: { points:[{x,y},...], spline, dash }. arrow: { start:{x,y}, end:{x,y}, bend, arrowheadStart, arrowheadEnd, kind } OR { fromId, toId } to bind the arrow between two existing node shapes (auto-positioned, follows on move). Coordinates are page-space; arrow/line start/end/points are relative to the shape's x,y. Unknown style values fall back to defaults.",
             items: {
               type: "object",
               properties: {
@@ -1660,7 +1728,7 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `${result.dryRun ? "Planned" : "Added"} ${result.count} shape(s) on ${result.pageId}: ${result.created.map((shape) => `${shape.id} [${shape.type}]`).join(", ")}.`,
+          text: `${result.dryRun ? "Planned" : "Added"} ${result.count} shape(s)${result.bindingCount ? ` + ${result.bindingCount} binding(s)` : ""} on ${result.pageId}: ${result.created.map((shape) => `${shape.id} [${shape.type}]`).join(", ")}.`,
         },
       ],
       structuredContent: result,

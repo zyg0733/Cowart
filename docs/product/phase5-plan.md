@@ -37,7 +37,12 @@ Cowart —— 这是全链路最脆的接缝（skill 里最啰嗦的一段）。
 
 ---
 
-## 5a. 流程图箭头绑定（arrow bindings）— 无头可验证
+## 5a. 流程图箭头绑定（arrow bindings）— ✅ 已落地
+
+> 实现：`add_cowart_shapes` 的 arrow 支持 `fromId`/`toId` → 自动定位到两节点中心 +
+> 生成两条 `binding` 记录（start→fromId、end→toId）。验证：无头集成 10 项（arrow 与
+> binding 均过真实 schema 校验、端点/几何/单端绑定/缺节点报错/dryRun）；浏览器
+> （Claude Preview）实测移动节点箭头跟随（maxX Δ≈199）。
 
 **目标**：agent 画的箭头能绑定到节点，移动节点箭头自动跟随 → 活的流程图/关系图。
 
@@ -151,8 +156,8 @@ ShapeUtil** 才能加载含该记录的画布。需：
 
 ## 构建顺序与复用关系
 
-0. **5.0 base64 直收**（前置、最小、无头；给 5b/5c/5d 铺路）
-1. **5a 箭头绑定**（无头、低险、是 5d 血缘连接的基础）
+0. **5.0 base64 直收** ✅（前置、最小、无头；给 5b/5c/5d 铺路）
+1. **5a 箭头绑定** ✅（无头、低险、是 5d 血缘连接的基础）
 2. **5b 草图→图**（复用 export+insert+5.0，最少新代码）
 3. **5c 区域蒙版编辑**（最大价值；复用 annotations+export 通道+replace+5.0）
 4. **5d 活的 holder + 血缘**（最高风险；复用 5a 绑定；拆两步）

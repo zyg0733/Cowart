@@ -348,8 +348,98 @@ function choosePlacement({ store, pageId, parentId, anchorShape, width, height, 
   return { x, y, w: width, h: height };
 }
 
+function extensionFromMimeType(mimeType) {
+  switch (mimeType) {
+    case "image/apng":
+      return ".apng";
+    case "image/avif":
+      return ".avif";
+    case "image/gif":
+      return ".gif";
+    case "image/jpeg":
+      return ".jpg";
+    case "image/svg+xml":
+      return ".svg";
+    case "image/webp":
+      return ".webp";
+    case "image/png":
+    default:
+      return ".png";
+  }
+}
+
+function parseDataUrl(src) {
+  const match = /^data:([^;,]+)?(?:;[^,]*)?,(.*)$/s.exec(src);
+  if (!match) return null;
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = /^data:[^,]*;base64,/i.test(src);
+  const buffer = isBase64 ? Buffer.from(match[2], "base64") : Buffer.from(decodeURIComponent(match[2]));
+  return { buffer, mimeType };
+}
+
+// Accept the image as a file path OR as base64 / a data URL (the form Codex
+// image_gen returns), so callers don't have to materialize a file first.
+async function resolveImageSource(args) {
+  const dataUrl = nonEmptyString(args.imageDataUrl);
+  const base64 = nonEmptyString(args.imageBase64);
+  if (dataUrl || base64) {
+    let buffer;
+    let mimeType;
+    if (dataUrl) {
+      const parsed = parseDataUrl(dataUrl);
+      if (!parsed) throw new Error("imageDataUrl is not a valid data URL.");
+      buffer = parsed.buffer;
+      mimeType = nonEmptyString(args.mimeType) || parsed.mimeType;
+    } else {
+      buffer = Buffer.from(base64, "base64");
+      mimeType = nonEmptyString(args.mimeType) || "image/png";
+    }
+    if (!buffer || buffer.length === 0) throw new Error("Decoded image data is empty.");
+    let dimensions = null;
+    try {
+      dimensions = imageDimensionsFromBuffer(buffer);
+    } catch {
+      dimensions = null;
+    }
+    return {
+      buffer,
+      sourcePath: null,
+      bytes: buffer.length,
+      defaultName: nonEmptyString(args.fileName) || `image${extensionFromMimeType(mimeType)}`,
+      dimensions,
+    };
+  }
+
+  const imagePath = nonEmptyString(args.imagePath);
+  if (!imagePath) throw new Error("Provide imagePath, imageBase64, or imageDataUrl.");
+  const sourcePath = pathResolve(imagePath);
+  const sourceStat = await stat(sourcePath);
+  if (!sourceStat.isFile()) throw new Error(`imagePath is not a file: ${sourcePath}`);
+  let dimensions = null;
+  try {
+    dimensions = imageDimensionsFromBuffer(await readFile(sourcePath));
+  } catch {
+    dimensions = null;
+  }
+  return {
+    buffer: null,
+    sourcePath,
+    bytes: sourceStat.size,
+    defaultName: nonEmptyString(args.fileName) || basename(sourcePath),
+    dimensions,
+  };
+}
+
+async function writeResolvedImage(source, filePath) {
+  if (source.buffer) await writeFile(filePath, source.buffer);
+  else await copyFile(source.sourcePath, filePath);
+}
+
 async function getImageDimensions(filePath) {
-  const buffer = await readFile(filePath);
+  return imageDimensionsFromBuffer(await readFile(filePath));
+}
+
+function imageDimensionsFromBuffer(buffer) {
   if (buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG") {
     return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
   }
@@ -392,16 +482,11 @@ async function getImageDimensions(filePath) {
       };
     }
   }
-  throw new Error(`Could not read image dimensions for ${filePath}. Pass displayWidth/displayHeight and use a PNG/JPEG/WebP source.`);
+  throw new Error("Could not read image dimensions. Pass displayWidth/displayHeight and use a PNG/JPEG/WebP source.");
 }
 
 async function insertCowartImage(args = {}) {
-  const imagePath = nonEmptyString(args.imagePath);
-  if (!imagePath) throw new Error("imagePath is required.");
-
-  const sourceImagePath = pathResolve(imagePath);
-  const sourceStat = await stat(sourceImagePath);
-  if (!sourceStat.isFile()) throw new Error(`imagePath is not a file: ${sourceImagePath}`);
+  const source = await resolveImageSource(args);
 
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
@@ -431,12 +516,7 @@ async function insertCowartImage(args = {}) {
       : pageId;
   if (!store[parentId]) throw new Error(`Could not determine target parent: ${parentId}`);
 
-  let imageSize = null;
-  try {
-    imageSize = await getImageDimensions(sourceImagePath);
-  } catch {
-    imageSize = null; // fall back to anchor / explicit dimensions below
-  }
+  const imageSize = source.dimensions; // null falls back to anchor / explicit dimensions below
 
   const anchorBounds = anchorShape ? pageBoundsForShape(store, anchorShape) : null;
   const matchAnchor = args.matchAnchor !== false && Boolean(anchorBounds);
@@ -502,7 +582,7 @@ async function insertCowartImage(args = {}) {
   if (!isSafeChildPath(resolveCanvasDir(args), assetsDir)) {
     throw new Error(`Unsafe page assets directory: ${assetsDir}`);
   }
-  const { fileName, filePath } = await uniqueFilePath(assetsDir, args.fileName || basename(sourceImagePath));
+  const { fileName, filePath } = await uniqueFilePath(assetsDir, source.defaultName);
   const recordSeed = sanitizeIdPart(fileName);
   const assetId = uniqueRecordId(store, "asset", recordSeed);
   const shapeId = uniqueRecordId(store, "shape", recordSeed);
@@ -518,7 +598,7 @@ async function insertCowartImage(args = {}) {
       src: pageAssetUrl(pageId, fileName),
       w: naturalSize.width,
       h: naturalSize.height,
-      fileSize: sourceStat.size,
+      fileSize: source.bytes,
       mimeType,
       isAnimated: false,
     },
@@ -563,7 +643,7 @@ async function insertCowartImage(args = {}) {
 
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
-    await copyFile(sourceImagePath, filePath);
+    await writeResolvedImage(source, filePath);
     try {
       // Merge just the new records into the server's current snapshot so a
       // concurrent browser save is not overwritten by our stale read.
@@ -589,7 +669,7 @@ async function insertCowartImage(args = {}) {
     assetId,
     shapeId,
     index,
-    sourceImagePath,
+    sourceImagePath: source.sourcePath ?? null,
     assetFile: filePath,
     assetUrl: assetRecord.props.src,
     imageSize: naturalSize,
@@ -831,11 +911,7 @@ function assetReferencedByOthers(store, assetId, exceptShapeId) {
 }
 
 async function replaceCowartImage(args = {}) {
-  const imagePath = nonEmptyString(args.imagePath);
-  if (!imagePath) throw new Error("imagePath is required.");
-  const sourceImagePath = pathResolve(imagePath);
-  const sourceStat = await stat(sourceImagePath);
-  if (!sourceStat.isFile()) throw new Error(`imagePath is not a file: ${sourceImagePath}`);
+  const source = await resolveImageSource(args);
 
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
@@ -862,12 +938,7 @@ async function replaceCowartImage(args = {}) {
     throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image shape.`);
   }
 
-  let imageSize = null;
-  try {
-    imageSize = await getImageDimensions(sourceImagePath);
-  } catch {
-    imageSize = null;
-  }
+  const imageSize = source.dimensions;
   const width = finiteNumber(args.displayWidth, finiteNumber(targetShape.props?.w, imageSize?.width ?? 1));
   const height = finiteNumber(args.displayHeight, finiteNumber(targetShape.props?.h, imageSize?.height ?? 1));
   const naturalSize = imageSize ?? { width: Math.round(width), height: Math.round(height) };
@@ -877,7 +948,7 @@ async function replaceCowartImage(args = {}) {
   if (!isSafeChildPath(canvasDir, assetsDir)) {
     throw new Error(`Unsafe page assets directory: ${assetsDir}`);
   }
-  const { fileName, filePath } = await uniqueFilePath(assetsDir, args.fileName || basename(sourceImagePath));
+  const { fileName, filePath } = await uniqueFilePath(assetsDir, source.defaultName);
   const assetId = uniqueRecordId(store, "asset", sanitizeIdPart(fileName));
   const oldAssetId = nonEmptyString(targetShape.props?.assetId);
   const mimeType = mimeTypeForFile(fileName);
@@ -891,7 +962,7 @@ async function replaceCowartImage(args = {}) {
       src: pageAssetUrl(pageId, fileName),
       w: naturalSize.width,
       h: naturalSize.height,
-      fileSize: sourceStat.size,
+      fileSize: source.bytes,
       mimeType,
       isAnimated: false,
     },
@@ -908,7 +979,7 @@ async function replaceCowartImage(args = {}) {
 
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
-    await copyFile(sourceImagePath, filePath);
+    await writeResolvedImage(source, filePath);
     await persistRecords(cowartUrl, store, snapshot, {
       put: [assetRecord, updatedShape],
       remove: removeOldAsset ? [oldAssetId] : [],
@@ -1281,7 +1352,10 @@ function toolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          imagePath: { type: "string", description: "Absolute local bitmap path to insert." },
+          imagePath: { type: "string", description: "Absolute local bitmap path to insert. Provide this or imageBase64/imageDataUrl." },
+          imageBase64: { type: "string", description: "Base64-encoded image bytes (e.g. a Codex image_generation_call.result), instead of a file path." },
+          imageDataUrl: { type: "string", description: "A data: URL (data:image/png;base64,...) instead of a file path." },
+          mimeType: { type: "string", description: "MIME type for imageBase64 (default image/png); also used to pick the saved file extension." },
           projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
           canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
           cowartUrl: { type: "string", description: "Running Cowart URL, for example http://127.0.0.1:43218." },
@@ -1305,7 +1379,6 @@ function toolDefinitions() {
           assetMeta: { type: "object", description: "Additional tldraw asset metadata." },
           dryRun: { type: "boolean", description: "Calculate insertion without copying or saving." },
         },
-        required: ["imagePath"],
         additionalProperties: false,
       },
       annotations: {
@@ -1384,7 +1457,10 @@ function toolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          imagePath: { type: "string", description: "Absolute local bitmap path to swap in." },
+          imagePath: { type: "string", description: "Absolute local bitmap path to swap in. Provide this or imageBase64/imageDataUrl." },
+          imageBase64: { type: "string", description: "Base64-encoded image bytes (e.g. a Codex image_generation_call.result), instead of a file path." },
+          imageDataUrl: { type: "string", description: "A data: URL (data:image/png;base64,...) instead of a file path." },
+          mimeType: { type: "string", description: "MIME type for imageBase64 (default image/png); also used to pick the saved file extension." },
           targetShapeId: { type: "string", description: "Image shape id to replace, or a frame holder whose image should be replaced. Falls back to the current selection." },
           shapeId: { type: "string", description: "Alias for targetShapeId." },
           projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
@@ -1397,7 +1473,6 @@ function toolDefinitions() {
           assetMeta: { type: "object", description: "Additional tldraw asset metadata." },
           dryRun: { type: "boolean", description: "Calculate the replacement without copying or saving." },
         },
-        required: ["imagePath"],
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

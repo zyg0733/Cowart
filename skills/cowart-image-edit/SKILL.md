@@ -60,7 +60,13 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    annotation-edit-20260620-153012.png
    ```
 
-   Resolve the actual local output image carefully before inserting it into Cowart. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
+   Preferred handoff: pass the revised image to Cowart **as base64** instead of
+   resolving a file. The `image_gen` tool returns base64 in the
+   `image_generation_call.result`; pass it to `insert_cowart_image` via
+   `imageBase64` (or `imageDataUrl`). Cowart decodes, reads dimensions, and saves it
+   into the page assets folder — no dependence on `$CODEX_HOME/generated_images`.
+
+   Only if you have a real file path and no base64, resolve it carefully. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
 
    Preferred resolution order:
 

@@ -73,7 +73,16 @@ meta flag. Support both shapes.
 
 4. Generate the bitmap with the built-in `imagegen` skill unless the user explicitly requests another image path. If the requested asset needs visible copy, labels, poster text, ad text, UI text, or typography, include that text directly in the image generation prompt and let the image model produce the final bitmap. Do not default to generating a text-free background and then adding text locally unless the user explicitly asks for local typography, deterministic text overlay, SVG/vector output, or another non-imagegen layout step.
 
-   Resolve the actual local output image carefully before inserting it into Cowart. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
+   Preferred handoff: pass the generated image to Cowart **as base64** rather than
+   hunting for a file. The built-in `image_gen` tool returns base64 in the
+   `image_generation_call.result`; pass that straight to `insert_cowart_image`
+   (or `replace_cowart_image`) via `imageBase64` (or `imageDataUrl`). Cowart decodes
+   it, reads dimensions from the bytes, and saves it into the page assets folder.
+   This avoids depending on `$CODEX_HOME/generated_images` (which may not be written).
+
+   Only if you already have a real file path (and no base64) fall back to resolving it:
+
+   Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
 
    Preferred resolution order:
 

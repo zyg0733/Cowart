@@ -1,5 +1,5 @@
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
-import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import readline from "node:readline";
 import { generateKeyBetween } from "fractional-indexing";
 
@@ -11,6 +11,7 @@ const TOOL_GET_CANVAS = "get_cowart_canvas";
 const TOOL_GET_ANNOTATIONS = "get_cowart_annotations";
 const TOOL_CREATE_HOLDER = "create_cowart_image_holder";
 const TOOL_REPLACE_IMAGE = "replace_cowart_image";
+const TOOL_EXPORT_VIEW = "export_cowart_view";
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
 const AI_IMAGE_HOLDER_DEFAULT_H = 220;
@@ -928,6 +929,134 @@ async function replaceCowartImage(args = {}) {
   };
 }
 
+function exportTimestamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function localAssetFileForShape(store, shape, canvasDir) {
+  const assetId = shape?.props?.assetId;
+  const asset = assetId ? store[assetId] : null;
+  const src = asset?.props?.src;
+  if (!src || typeof src !== "string" || !src.startsWith(PAGE_ASSETS_ROUTE)) return null;
+  const parts = src.slice(PAGE_ASSETS_ROUTE.length).split("/").map(decodeURIComponent);
+  if (parts.length < 2 || !parts[0]) return null;
+  const filePath = resolve(join(canvasDir, "pages", parts[0], "assets", ...parts.slice(1)));
+  return isSafeChildPath(canvasDir, filePath) ? filePath : null;
+}
+
+function resolveSingleImageShape(store, { mode, shapeIds, selection }) {
+  let ids = null;
+  if (mode === "shapes" && Array.isArray(shapeIds)) ids = shapeIds;
+  else if (mode === "selection") ids = (selection?.selectedShapes ?? []).map((shape) => shape.id);
+  else return null; // page / currentPage are not a single image
+  if (!ids || ids.length !== 1) return null;
+  const shape = store[ids[0]];
+  if (!shape) return null;
+  if (shape.type === "image") return shape;
+  if (shape.type === "frame") {
+    const pageId = findPageIdForShape(store, shape.id);
+    const child = pageId
+      ? getPageShapes(store, pageId).find((candidate) => candidate.parentId === shape.id && candidate.type === "image")
+      : null;
+    return child ?? null;
+  }
+  return null;
+}
+
+async function exportCowartView(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const { selection } = await readSelectionState(args);
+
+  const explicitShapeId = nonEmptyString(args.targetShapeId) || nonEmptyString(args.shapeId);
+  let mode = nonEmptyString(args.mode);
+  let shapeIds = Array.isArray(args.shapeIds) ? args.shapeIds.filter((value) => typeof value === "string") : null;
+  if (!mode) {
+    if (explicitShapeId) mode = "shapes";
+    else if ((selection?.selectedShapes ?? []).length > 0) mode = "selection";
+    else mode = "currentPage";
+  }
+  if (mode === "shapes" && (!shapeIds || shapeIds.length === 0) && explicitShapeId) shapeIds = [explicitShapeId];
+
+  const requestedFormat = ["png", "jpeg", "svg", "webp"].includes(args.format) ? args.format : null;
+  const canvasDir = resolveCanvasDir(args);
+
+  // Asset fast-path: a single image (or a frame holder's image) with a local
+  // file, and no explicit format/render -> copy the original bitmap losslessly.
+  let strategy = null;
+  let assetSourceFile = null;
+  if (!args.render && !requestedFormat) {
+    const single = resolveSingleImageShape(store, { mode, shapeIds, selection });
+    if (single) {
+      const file = localAssetFileForShape(store, single, canvasDir);
+      if (file) {
+        try {
+          await stat(file);
+          strategy = "asset";
+          assetSourceFile = file;
+        } catch {
+          strategy = null;
+        }
+      }
+    }
+  }
+
+  const format = requestedFormat ?? "png";
+  const ext = strategy === "asset" ? extname(assetSourceFile) || ".png" : `.${format === "jpeg" ? "jpg" : format}`;
+  const outputPath = nonEmptyString(args.outputPath)
+    ? pathResolve(args.outputPath)
+    : join(canvasDir, "exports", `cowart-export-${exportTimestamp()}${ext}`);
+
+  if (args.dryRun) {
+    return {
+      cowartUrl,
+      strategy: strategy ?? "render",
+      mode,
+      shapeIds: shapeIds ?? null,
+      format: strategy === "asset" ? "asset" : format,
+      outputPath,
+      dryRun: true,
+    };
+  }
+
+  await mkdir(dirname(outputPath), { recursive: true });
+
+  if (strategy === "asset") {
+    await copyFile(assetSourceFile, outputPath);
+    const bytes = (await stat(outputPath)).size;
+    return { cowartUrl, strategy: "asset", outputPath, sourceFile: assetSourceFile, bytes, dryRun: false };
+  }
+
+  // Render path: the MCP cannot rasterize tldraw, so a connected browser does it.
+  const render = await fetchJson(`${cowartUrl}/api/canvas/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      mode,
+      shapeIds: shapeIds ?? undefined,
+      pageId: nonEmptyString(args.pageId) || undefined,
+      format,
+      scale: finiteNumber(args.scale, undefined),
+      padding: finiteNumber(args.padding, undefined),
+      background: typeof args.background === "boolean" ? args.background : undefined,
+      timeoutMs: finiteNumber(args.timeoutMs, undefined),
+    }),
+  });
+  if (!render?.base64) throw new Error("The Cowart browser returned no image data for the export.");
+  const buffer = Buffer.from(render.base64, "base64");
+  await writeFile(outputPath, buffer);
+  return {
+    cowartUrl,
+    strategy: "render",
+    outputPath,
+    format,
+    width: render.width ?? null,
+    height: render.height ?? null,
+    bytes: buffer.length,
+    dryRun: false,
+  };
+}
+
 function toolDefinitions() {
   return [
     {
@@ -1085,6 +1214,34 @@ function toolDefinitions() {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
+    {
+      name: TOOL_EXPORT_VIEW,
+      title: "Export Cowart View",
+      description:
+        "Export the canvas to an image file the agent can attach or reference. A single image (or a frame holder's image) is copied losslessly from page assets (no browser needed). Pages, selections, or multi-shape regions are rasterized by a connected Cowart browser via editor.toImage, so the canvas must be open for those.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          outputPath: { type: "string", description: "Absolute destination file path. Defaults to <canvasDir>/exports/cowart-export-<timestamp>.<ext>." },
+          mode: { type: "string", enum: ["selection", "shapes", "page", "currentPage"], description: "What to export. Defaults to a single targetShapeId, else selection, else the current page." },
+          targetShapeId: { type: "string", description: "Export a single shape (image, or a frame holder's image). Falls back to the current selection." },
+          shapeId: { type: "string", description: "Alias for targetShapeId." },
+          shapeIds: { type: "array", items: { type: "string" }, description: "Shape ids to export when mode is 'shapes'." },
+          pageId: { type: "string", description: "Page to export when mode is 'page'." },
+          format: { type: "string", enum: ["png", "jpeg", "svg", "webp"], description: "Output format. Omit to copy a single image losslessly; set it to force a browser render." },
+          render: { type: "boolean", description: "Force a browser render even for a single image. Defaults to false." },
+          scale: { type: "number", description: "Render scale factor (render strategy only)." },
+          padding: { type: "number", description: "Render padding in canvas units (render strategy only)." },
+          background: { type: "boolean", description: "Include the page background in the render (render strategy only)." },
+          dryRun: { type: "boolean", description: "Resolve the plan (strategy + output path) without writing or rendering." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
   ];
 }
 
@@ -1179,6 +1336,20 @@ async function handleToolCall(id, params) {
     return;
   }
 
+  if (params?.name === TOOL_EXPORT_VIEW) {
+    const result = await exportCowartView(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned export" : "Exported"} (${result.strategy}) -> ${result.outputPath}`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
 }
 
@@ -1194,7 +1365,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place).",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render).",
     });
     return;
   }

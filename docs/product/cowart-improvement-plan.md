@@ -12,12 +12,12 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
 
 | 能力 | 人（UI） | agent（MCP） | 差距 |
 |------|----------|--------------|------|
-| 看见画布内容 | ✅ | ❌ 只能读"选中项" | agent 无法对整块板子推理 |
-| 读懂标注（批注+箭头指向） | ✅ 肉眼 | ⚠️ 只能截图让模型 OCR | 旗舰流程不可靠、费 token |
+| 看见画布内容 | ✅ | ✅ get_canvas（Phase 1） | — |
+| 读懂标注（批注+箭头指向） | ✅ 肉眼 | ✅ get_annotations（Phase 1） | — |
 | 放入图片 | ✅ | ✅ insert | — |
-| 创建 AI 图片 holder | ✅ 工具栏 | ❌ | image-gen 要手写记录 |
-| 替换 holder 里的图 | ✅ | ❌ | "替换"流程只能手写快照 |
-| 导出区域/页为 PNG | ✅ | ❌ | agent 无法把画布结果带回答里 |
+| 创建 AI 图片 holder | ✅ 工具栏 | ✅ create_holder（Phase 1） | — |
+| 替换 holder 里的图 | ✅ | ✅ replace_image（Phase 1） | — |
+| 导出区域/页为 PNG | ✅ | ✅ export_view（Phase 2） | — |
 
 **结论**：最高杠杆的改进不是加画布功能，而是**补齐 agent 的感知与动作**，让旗舰"标注→改图"闭环从"截图猜意图"升级为"读结构化数据"。
 
@@ -37,8 +37,11 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
 
 配套：升级 `cowart-image-gen` / `cowart-image-edit` skill，优先用上述工具而非手写记录/纯截图。
 
-### Phase 2 — 导出与回带
-- `export_cowart_view`：把选区/页/单个 shape 导出为 PNG 到文件，agent 可在回答里引用或附带。
+### Phase 2 — 导出与回带（已落地）
+- `export_cowart_view`：把选区/页/单个 shape 导出为图片文件，agent 可在回答里引用或附带。两种策略：
+  - **资产快路径**（无需浏览器）：单张图片（或 frame holder 内的图）直接从页面资产无损复制，覆盖"把生成图给我一个文件"的主场景。
+  - **浏览器渲染**（页/选区/多 shape 含几何文本箭头）：MCP→服务端长轮询→SSE 指令→浏览器 `editor.toImage` 渲染→base64 回传→MCP 写文件；需画布在浏览器中打开。
+- 验证边界：渲染通道的全链路（含模拟浏览器）已测；tldraw 自身的 `toImage` 栅格化为上游 API，未在无头环境复验。
 
 ### Phase 3 — agent 作图
 - `add_cowart_shapes`：让 agent 创建文本/便签/箭头/几何，输出流程图、注释、排版。

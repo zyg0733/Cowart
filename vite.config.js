@@ -33,6 +33,26 @@ function withCanvasWriteLock(task) {
   return run
 }
 
+// Export broker: the MCP cannot rasterize tldraw shapes, so a render request is
+// pushed to a connected browser over SSE and the resulting image is posted back.
+const pendingExports = new Map()
+let exportRequestCounter = 0
+
+function broadcastExportRequested(payload) {
+  for (const client of canvasEventClients) {
+    if (client.destroyed) {
+      canvasEventClients.delete(client)
+      continue
+    }
+    try {
+      client.write(`event: export-requested\n`)
+      client.write(`data: ${JSON.stringify(payload)}\n\n`)
+    } catch {
+      canvasEventClients.delete(client)
+    }
+  }
+}
+
 const mimeTypes = new Map([
   ['.apng', 'image/apng'],
   ['.avif', 'image/avif'],
@@ -633,6 +653,63 @@ function canvasStoragePlugin() {
           res.end()
         } catch (error) {
           sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      // Browser posts a rendered export back here, resolving the held MCP request.
+      server.middlewares.use('/api/canvas/export-result', async (req, res) => {
+        try {
+          if (req.method !== 'POST') {
+            res.statusCode = 405
+            res.setHeader('allow', 'POST')
+            res.end()
+            return
+          }
+          const payload = JSON.parse(await readRequestBody(req))
+          const pending = payload?.requestId ? pendingExports.get(payload.requestId) : null
+          if (pending) {
+            pendingExports.delete(payload.requestId)
+            clearTimeout(pending.timer)
+            if (payload.error) {
+              pending.reject(new Error(String(payload.error)))
+            } else {
+              pending.resolve({ base64: payload.base64, width: payload.width, height: payload.height, format: payload.format })
+            }
+          }
+          sendJson(res, 200, { ok: true })
+        } catch (error) {
+          sendJson(res, 500, { error: error.message })
+        }
+      })
+
+      // MCP asks the connected browser to render a view; the response is held
+      // open until the browser posts the image back (or it times out).
+      server.middlewares.use('/api/canvas/export', async (req, res) => {
+        try {
+          if (req.method !== 'POST') {
+            res.statusCode = 405
+            res.setHeader('allow', 'POST')
+            res.end()
+            return
+          }
+          const request = JSON.parse(await readRequestBody(req))
+          if (canvasEventClients.size === 0) {
+            sendJson(res, 503, { error: 'No Cowart browser is connected to render the export. Open the canvas in a browser.' })
+            return
+          }
+          const requestId = `${process.pid}-${++exportRequestCounter}-${Date.now()}`
+          const timeoutMs = Number.isFinite(request?.timeoutMs) ? request.timeoutMs : 20000
+          const result = await new Promise((resolveExport, rejectExport) => {
+            const timer = setTimeout(() => {
+              pendingExports.delete(requestId)
+              rejectExport(new Error('Timed out waiting for the Cowart browser to render the export.'))
+            }, timeoutMs)
+            pendingExports.set(requestId, { resolve: resolveExport, reject: rejectExport, timer })
+            broadcastExportRequested({ requestId, ...request })
+          })
+          sendJson(res, 200, { ok: true, ...result })
+        } catch (error) {
+          sendJson(res, 504, { error: error.message })
         }
       })
 

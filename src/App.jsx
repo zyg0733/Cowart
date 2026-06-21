@@ -47,6 +47,7 @@ import { diffRemoteSnapshot, isCanvasSnapshot, storeDiffersFromBaseline } from '
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
+const EXPORT_RESULT_ENDPOINT = '/api/canvas/export-result'
 const SELECTION_ENDPOINT = '/api/selection'
 const VIEW_STATE_ENDPOINT = '/api/view-state'
 const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'
@@ -580,6 +581,60 @@ function CowartToolbar(props) {
   )
 }
 
+function resolveExportShapeIds(editor, request) {
+  if (request.mode === 'shapes' && Array.isArray(request.shapeIds)) return request.shapeIds
+  if (request.mode === 'selection') return editor.getSelectedShapeIds()
+  if (request.mode === 'page' && request.pageId) return [...editor.getPageShapeIds(request.pageId)]
+  return [...editor.getCurrentPageShapeIds()]
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read export blob.'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function postExportResult(payload) {
+  return fetch(EXPORT_RESULT_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).catch((error) => console.error(error))
+}
+
+// Render an export the MCP requested (it cannot rasterize tldraw itself) and
+// post the image back so the held MCP request can resolve.
+async function handleCowartExportRequest(editor, event) {
+  let request = null
+  try {
+    request = JSON.parse(event.data)
+  } catch {
+    return
+  }
+  if (!request?.requestId) return
+
+  try {
+    const shapeIds = resolveExportShapeIds(editor, request)
+    if (!shapeIds || shapeIds.length === 0) {
+      throw new Error('Nothing to export for the requested target.')
+    }
+    const format = ['png', 'jpeg', 'svg', 'webp'].includes(request.format) ? request.format : 'png'
+    const options = { format }
+    if (Number.isFinite(request.scale)) options.scale = request.scale
+    if (Number.isFinite(request.padding)) options.padding = request.padding
+    if (typeof request.background === 'boolean') options.background = request.background
+
+    const image = await editor.toImage(shapeIds, options)
+    const base64 = await blobToBase64(image.blob)
+    await postExportResult({ requestId: request.requestId, base64, width: image.width, height: image.height, format })
+  } catch (error) {
+    await postExportResult({ requestId: request.requestId, error: String(error?.message ?? error) })
+  }
+}
+
 function getCowartSelection(editor) {
   const selectedShapeIds = editor.getSelectedShapeIds()
   return selectedShapeIds.map((id) => {
@@ -917,6 +972,9 @@ export default function App() {
         // Skip the reload for a revision we already hold (typically our own save).
         if (payloadRevision !== null && payloadRevision === revisionRef.current) return
         loadRemoteCanvasSnapshot()
+      })
+      canvasEvents.addEventListener('export-requested', (event) => {
+        handleCowartExportRequest(editor, event)
       })
       canvasEvents.onerror = (error) => {
         console.warn('Cowart canvas live refresh disconnected.', error)

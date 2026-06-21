@@ -4,12 +4,40 @@
 > 主题：把 tldraw 的能力（绑定/自定义形状/几何/导出）与图像模型能力
 > （蒙版编辑/图生图/多图参考/对话式迭代）叠加，闭合「人 × agent 共享画布」。
 
-四个方向已选定。下面每个给出：目标 / 数据模型与 API / 改动面 / 验证 / 风险。
-最后是**构建顺序**（按风险递增、后者复用前者）。
+四个方向已选定，外加一个前置项 5.0（Codex image gen 结合，见下）。下面每个给出：
+目标 / 数据模型与 API / 改动面 / 验证 / 风险。最后是**构建顺序**。
 
 ---
 
-## 5a. 流程图箭头绑定（arrow bindings）— 先做，无头可验证
+## 5.0. 与 Codex image gen 更好的结合（前置，最小，先做）
+
+**研究结论（2026-06，已核实）**：Codex CLI 默认图像模型是 **gpt-image-2**，内置
+`image_gen` 工具产物是 **base64**（`image_generation_call.result`）；落盘到
+`$CODEX_HOME/generated_images/` 的行为**不可靠**（官方回归 issue openai/codex#28881
+一度不再写文件）。gpt-image-2 还原生支持 **input_image（参考/编辑）/ mask（局部重绘）/
+style_match（风格匹配）/ 灵活尺寸（WxH，16 整除、宽高比 1:3–3:1、≤3840×2160）**。
+
+**现状瓶颈**：Cowart 的 `insert_cowart_image` / `replace_cowart_image` **只吃文件路径**，
+且只做整图生成。于是 agent 拿到 base64 后要先猜文件位置（对抗上面的回归）才能交给
+Cowart —— 这是全链路最脆的接缝（skill 里最啰嗦的一段）。
+
+**改动（headless、最小）**：
+- 给 `insert_cowart_image` / `replace_cowart_image` 增加 `imageBase64` / `imageDataUrl`
+  （+可选 `mimeType`）入参；`imagePath` 改为非必填，三者择一。服务端口 `parseDataUrl`/
+  `extensionFromMimeType`，`getImageDimensions` 拆出 `imageDimensionsFromBuffer`，
+  写入用 `writeFile(buffer)` 代替 `copyFile`。
+- 升级 skill：agent 把 `image_generation_call.result` 的 base64 **直接传给 Cowart**，
+  删掉「解析路径 + 扫 JSONL + 赌 generated_images + 肉眼确认」整套逻辑。
+- **保持模型无关**：Cowart 只负责供输入 / 收产物，不硬编码任何模型。
+
+**为何先做**：它给 5b/5c/5d 都铺路（它们都要在模型产物与画布之间搬字节），且无头可验。
+
+**后续小项（非 5.0 必须）**：尺寸契约 helper —— 按 holder/区域宽高比算出最接近的合法
+生成尺寸（16 整除、1:3–3:1）供 agent，使生成即贴合、免拉伸裁切。
+
+---
+
+## 5a. 流程图箭头绑定（arrow bindings）— 无头可验证
 
 **目标**：agent 画的箭头能绑定到节点，移动节点箭头自动跟随 → 活的流程图/关系图。
 
@@ -42,11 +70,14 @@ end→toId，`normalizedAnchor` 默认 {0.5,0.5}、`snap:"edge"`）。或单独�
 **复用**：`export_cowart_view`（Phase 2，mode `shapes`/`selection` → PNG）已能把草图区
 导出；`insert_cowart_image` 已能把结果放旁边。**几乎不需要新底层代码**。
 
+**模型支撑**：gpt-image-2 原生支持 `input_image`（参考/编辑）与 `style_match`，
+所以「草图作结构参考」是模型原生能力，不是 hack。
+
 **改动**：新增 skill `cowart-sketch-to-image`（或扩 image-gen）编排：
 1. 用户选中草图 → `export_cowart_view` 导出该区域 PNG。
-2. 调用图像模型，把草图作为 **structure/img2img 参考** + 文本 prompt。
+2. 调用 image_gen，把草图作为 **input_image / 结构参考** + 文本 prompt。
 3. 可选：`get_cowart_canvas` 取草图里的文本标签并入 prompt。
-4. `insert_cowart_image` 把结果放在草图旁（或 `fillAnchor` 填 holder）。
+4. 用 5.0 的 base64 直收，把结果放在草图旁（或 `fillAnchor` 填 holder）。
 
 **验证**：export/insert 已测；模型调用为委派。主要验证 skill 流程与「选区导出
 含 draw 形状」（tldraw `toImage` 支持 draw）。
@@ -59,8 +90,11 @@ end→toId，`normalizedAnchor` 默认 {0.5,0.5}、`snap:"edge"`）。或单独�
 
 **目标**：标注改图从「整图重生成」升级为「只改标注区域、其余像素保留」。
 
+**模型支撑**：gpt-image-2 原生有 `mask` 参数（inpainting），5c 直接对接而非 hack。
+
 **复用**：`get_cowart_annotations`（Phase 1，给出箭头尖端坐标 + 目标 shape）、
-`export_cowart_view`（Phase 2 浏览器渲染通道）、`replace_cowart_image`（Phase 1 回填）。
+`export_cowart_view`（Phase 2 浏览器渲染通道）、`replace_cowart_image`（Phase 1 回填、
+经 5.0 后可直收 base64 结果）。
 
 **关键：坐标空间映射（最易错处）**。标注在**页面坐标**；目标 image shape 有页面
 bounds；asset 有**自然像素尺寸**。蒙版必须在**图片像素空间**：
@@ -117,9 +151,10 @@ ShapeUtil** 才能加载含该记录的画布。需：
 
 ## 构建顺序与复用关系
 
+0. **5.0 base64 直收**（前置、最小、无头；给 5b/5c/5d 铺路）
 1. **5a 箭头绑定**（无头、低险、是 5d 血缘连接的基础）
-2. **5b 草图→图**（复用 export+insert，最少新代码）
-3. **5c 区域蒙版编辑**（最大价值；复用 annotations+export 通道+replace）
+2. **5b 草图→图**（复用 export+insert+5.0，最少新代码）
+3. **5c 区域蒙版编辑**（最大价值；复用 annotations+export 通道+replace+5.0）
 4. **5d 活的 holder + 血缘**（最高风险；复用 5a 绑定；拆两步）
 
 横切原则不变：加法不破坏、写操作走合并端点、镜像 UI 记录、能无头就无头验证、

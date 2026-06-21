@@ -43,8 +43,10 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
   - **浏览器渲染**（页/选区/多 shape 含几何文本箭头）：MCP→服务端长轮询→SSE 指令→浏览器 `editor.toImage` 渲染→base64 回传→MCP 写文件；需画布在浏览器中打开。
 - 验证边界：渲染通道的全链路（含模拟浏览器）已测；tldraw 自身的 `toImage` 栅格化为上游 API，未在无头环境复验。
 
-### Phase 3 — agent 作图
-- `add_cowart_shapes`：让 agent 创建文本/便签/箭头/几何，输出流程图、注释、排版。
+### Phase 3 — agent 作图（已落地）
+- `add_cowart_shapes`：让 agent 创建 text / geo（矩形/椭圆/菱形…）/ note（便签）/ line / arrow，输出流程图、注释、排版。
+- 完全无头、无需浏览器：记录由服务端按 tldraw 5 prop 规格构建，对 agent 传入的样式枚举做白名单兜底；批量、`dryRun` 可预览。
+- 验证：每条生成记录都用**真实 tldraw schema 校验**（`schema.types.shape.validator`），无委派边界。
 
 ### Phase 4 — 打磨
 - 空画布首启引导；bundle 代码分割（当前 1.8MB 警告）；多页导航。

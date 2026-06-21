@@ -12,6 +12,7 @@ const TOOL_GET_ANNOTATIONS = "get_cowart_annotations";
 const TOOL_CREATE_HOLDER = "create_cowart_image_holder";
 const TOOL_REPLACE_IMAGE = "replace_cowart_image";
 const TOOL_EXPORT_VIEW = "export_cowart_view";
+const TOOL_ADD_SHAPES = "add_cowart_shapes";
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
 const AI_IMAGE_HOLDER_DEFAULT_H = 220;
@@ -1057,6 +1058,193 @@ async function exportCowartView(args = {}) {
   };
 }
 
+// Allowed tldraw 5 style/enum values, used to sanitize agent-supplied props so a
+// stray value cannot produce a record the browser's store would reject.
+const SHAPE_STYLE_VALUES = {
+  color: new Set(["black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange", "green", "light-green", "light-red", "red", "white"]),
+  size: new Set(["s", "m", "l", "xl"]),
+  font: new Set(["draw", "sans", "serif", "mono"]),
+  dash: new Set(["draw", "solid", "dashed", "dotted", "none"]),
+  fill: new Set(["none", "semi", "solid", "pattern", "fill", "lined-fill"]),
+  align: new Set(["start", "middle", "end"]),
+  verticalAlign: new Set(["start", "middle", "end"]),
+  textAlign: new Set(["start", "middle", "end"]),
+  geo: new Set(["rectangle", "ellipse", "triangle", "diamond", "pentagon", "hexagon", "octagon", "star", "rhombus", "oval", "trapezoid", "arrow-right", "arrow-left", "arrow-up", "arrow-down", "x-box", "check-box", "cloud", "heart"]),
+  spline: new Set(["line", "cubic"]),
+  arrowhead: new Set(["none", "arrow", "triangle", "square", "dot", "diamond", "inverted", "bar", "pipe"]),
+  arrowKind: new Set(["arc", "elbow"]),
+};
+
+function pickStyle(kind, value, fallback) {
+  return typeof value === "string" && SHAPE_STYLE_VALUES[kind].has(value) ? value : fallback;
+}
+
+function richTextFromText(text) {
+  const value = nonEmptyString(text);
+  return { type: "doc", content: [{ type: "paragraph", content: value ? [{ type: "text", text: value }] : [] }] };
+}
+
+function buildLinePoints(input) {
+  const pts = Array.isArray(input) && input.length >= 2 ? input : [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+  const points = {};
+  let prevIndex = null;
+  for (const point of pts) {
+    const index = generateKeyBetween(prevIndex, null);
+    prevIndex = index;
+    points[index] = { id: index, index, x: finiteNumber(point?.x, 0), y: finiteNumber(point?.y, 0) };
+  }
+  return points;
+}
+
+const SHAPE_BUILDERS = {
+  text: (spec) => ({
+    color: pickStyle("color", spec.color, "black"),
+    size: pickStyle("size", spec.size, "m"),
+    font: pickStyle("font", spec.font, "draw"),
+    textAlign: pickStyle("textAlign", spec.textAlign ?? spec.align, "start"),
+    w: Math.max(1, finiteNumber(spec.w, 200)),
+    richText: richTextFromText(spec.text),
+    scale: Math.max(0.01, finiteNumber(spec.scale, 1)),
+    autoSize: spec.autoSize !== false,
+  }),
+  geo: (spec) => ({
+    geo: pickStyle("geo", spec.geo, "rectangle"),
+    dash: pickStyle("dash", spec.dash, "draw"),
+    url: "",
+    w: Math.max(1, finiteNumber(spec.w, 160)),
+    h: Math.max(1, finiteNumber(spec.h, 100)),
+    growY: 0,
+    scale: Math.max(0.01, finiteNumber(spec.scale, 1)),
+    labelColor: pickStyle("color", spec.labelColor, "black"),
+    color: pickStyle("color", spec.color, "black"),
+    fill: pickStyle("fill", spec.fill, "none"),
+    size: pickStyle("size", spec.size, "m"),
+    font: pickStyle("font", spec.font, "draw"),
+    align: pickStyle("align", spec.align, "middle"),
+    verticalAlign: pickStyle("verticalAlign", spec.verticalAlign, "middle"),
+    richText: richTextFromText(spec.text),
+  }),
+  note: (spec) => ({
+    color: pickStyle("color", spec.color, "yellow"),
+    labelColor: pickStyle("color", spec.labelColor, "black"),
+    size: pickStyle("size", spec.size, "m"),
+    font: pickStyle("font", spec.font, "draw"),
+    fontSizeAdjustment: 0,
+    align: pickStyle("align", spec.align, "middle"),
+    verticalAlign: pickStyle("verticalAlign", spec.verticalAlign, "middle"),
+    growY: 0,
+    url: "",
+    richText: richTextFromText(spec.text),
+    scale: Math.max(0.01, finiteNumber(spec.scale, 1)),
+    textFirstEditedBy: null,
+  }),
+  line: (spec) => ({
+    color: pickStyle("color", spec.color, "black"),
+    dash: pickStyle("dash", spec.dash, "draw"),
+    size: pickStyle("size", spec.size, "m"),
+    spline: pickStyle("spline", spec.spline, "line"),
+    scale: Math.max(0.01, finiteNumber(spec.scale, 1)),
+    points: buildLinePoints(spec.points),
+  }),
+  arrow: (spec) => {
+    const start = spec.start && typeof spec.start === "object" ? spec.start : { x: 0, y: 0 };
+    const end = spec.end && typeof spec.end === "object" ? spec.end : { x: 100, y: 0 };
+    return {
+      kind: pickStyle("arrowKind", spec.kind, "arc"),
+      labelColor: pickStyle("color", spec.labelColor, "black"),
+      color: pickStyle("color", spec.color, "black"),
+      fill: pickStyle("fill", spec.fill, "none"),
+      dash: pickStyle("dash", spec.dash, "draw"),
+      size: pickStyle("size", spec.size, "m"),
+      arrowheadStart: pickStyle("arrowhead", spec.arrowheadStart, "none"),
+      arrowheadEnd: pickStyle("arrowhead", spec.arrowheadEnd, "arrow"),
+      font: pickStyle("font", spec.font, "draw"),
+      start: { x: finiteNumber(start.x, 0), y: finiteNumber(start.y, 0) },
+      end: { x: finiteNumber(end.x, 100), y: finiteNumber(end.y, 0) },
+      bend: finiteNumber(spec.bend, 0),
+      richText: richTextFromText(spec.text),
+      labelPosition: finiteNumber(spec.labelPosition, 0.5),
+      scale: Math.max(0.01, finiteNumber(spec.scale, 1)),
+      elbowMidPoint: finiteNumber(spec.elbowMidPoint, 0.5),
+    };
+  },
+};
+
+function maxSiblingIndex(store, parentId) {
+  const indexes = Object.values(store)
+    .filter((record) => record?.typeName === "shape" && record.parentId === parentId && typeof record.index === "string")
+    .map((record) => record.index)
+    .sort();
+  return indexes.at(-1) ?? null;
+}
+
+async function addCowartShapes(args = {}) {
+  const specs = Array.isArray(args.shapes) ? args.shapes : args.shape ? [args.shape] : [];
+  if (specs.length === 0) throw new Error("Provide a non-empty 'shapes' array.");
+  if (specs.length > 200) throw new Error("Too many shapes in one call (max 200).");
+
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const viewState = await readViewState(args);
+  const defaultPageId =
+    nonEmptyString(args.pageId) ||
+    nonEmptyString(viewState?.currentPageId) ||
+    Object.values(store).find((record) => record?.typeName === "page")?.id;
+  if (!defaultPageId || !store[defaultPageId]) throw new Error("Could not determine target pageId.");
+
+  const batchParentId = nonEmptyString(args.parentId) && store[nonEmptyString(args.parentId)] ? nonEmptyString(args.parentId) : null;
+  const lastIndexByParent = new Map();
+  const records = [];
+  const created = [];
+
+  for (const spec of specs) {
+    const type = nonEmptyString(spec?.type);
+    const build = type ? SHAPE_BUILDERS[type] : null;
+    if (!build) {
+      throw new Error(`Unsupported shape type: ${spec?.type}. Supported: ${Object.keys(SHAPE_BUILDERS).join(", ")}.`);
+    }
+
+    const specParentId = nonEmptyString(spec.parentId) && store[nonEmptyString(spec.parentId)] ? nonEmptyString(spec.parentId) : null;
+    const parentId = specParentId || batchParentId || defaultPageId;
+
+    const prevIndex = lastIndexByParent.has(parentId) ? lastIndexByParent.get(parentId) : maxSiblingIndex(store, parentId);
+    const index = generateKeyBetween(prevIndex, null);
+    lastIndexByParent.set(parentId, index);
+
+    const shapeId = uniqueRecordId(store, "shape", sanitizeIdPart(type, "shape"));
+    const record = {
+      id: shapeId,
+      typeName: "shape",
+      type,
+      x: finiteNumber(spec.x, 0),
+      y: finiteNumber(spec.y, 0),
+      rotation: finiteNumber(spec.rotation, 0),
+      index,
+      parentId,
+      isLocked: spec.isLocked === true,
+      opacity: Math.min(1, Math.max(0, finiteNumber(spec.opacity, 1))),
+      meta: spec.meta && typeof spec.meta === "object" ? spec.meta : {},
+      props: build(spec),
+    };
+    store[shapeId] = record; // reserve the id so the next uniqueRecordId differs
+    records.push(record);
+    created.push({ id: shapeId, type, parentId, index });
+  }
+
+  if (!args.dryRun) {
+    await persistRecords(cowartUrl, store, snapshot, { put: records });
+  }
+
+  return {
+    cowartUrl,
+    pageId: defaultPageId,
+    created,
+    count: records.length,
+    records: args.dryRun ? records : undefined,
+    dryRun: Boolean(args.dryRun),
+  };
+}
+
 function toolDefinitions() {
   return [
     {
@@ -1242,6 +1430,47 @@ function toolDefinitions() {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
+    {
+      name: TOOL_ADD_SHAPES,
+      title: "Add Cowart Shapes",
+      description:
+        "Create tldraw shapes on the canvas so the agent can author diagrams, labels, and layouts (flowcharts, callouts, sticky notes). Supported types: text, geo (rectangle/ellipse/diamond/etc.), note (sticky), line, arrow. Records are built and validated against the tldraw schema, so no browser is required.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          pageId: { type: "string", description: "Target page id. Defaults to the current view-state page." },
+          parentId: { type: "string", description: "Default parent for all shapes (page or frame id). Defaults to the page." },
+          shapes: {
+            type: "array",
+            description:
+              "Shapes to create. Each item: { type, x, y, rotation?, parentId?, meta?, text?, color?, size?, font? } plus type-specific fields. geo: { geo, w, h, fill, dash, align, verticalAlign, labelColor }. text: { w, textAlign, autoSize }. note: sticky (fixed size). line: { points:[{x,y},...], spline, dash }. arrow: { start:{x,y}, end:{x,y}, bend, arrowheadStart, arrowheadEnd, kind }. Coordinates are page-space; arrow/line start/end/points are relative to the shape's x,y. Unknown style values fall back to defaults.",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["text", "geo", "note", "line", "arrow"] },
+                x: { type: "number" },
+                y: { type: "number" },
+                text: { type: "string" },
+                color: { type: "string" },
+                size: { type: "string", enum: ["s", "m", "l", "xl"] },
+                geo: { type: "string" },
+                w: { type: "number" },
+                h: { type: "number" },
+              },
+              required: ["type"],
+              additionalProperties: true,
+            },
+          },
+          dryRun: { type: "boolean", description: "Build and return the records without saving." },
+        },
+        required: ["shapes"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
   ];
 }
 
@@ -1350,6 +1579,20 @@ async function handleToolCall(id, params) {
     return;
   }
 
+  if (params?.name === TOOL_ADD_SHAPES) {
+    const result = await addCowartShapes(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned" : "Added"} ${result.count} shape(s) on ${result.pageId}: ${result.created.map((shape) => `${shape.id} [${shape.type}]`).join(", ")}.`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
 }
 
@@ -1365,7 +1608,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render).",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes for diagrams and labels).",
     });
     return;
   }

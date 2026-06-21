@@ -4,9 +4,16 @@ import readline from "node:readline";
 import { generateKeyBetween } from "fractional-indexing";
 
 const SERVER_NAME = "Cowart MCP";
-const SERVER_VERSION = "0.1.1";
+const SERVER_VERSION = "0.2.0";
 const TOOL_GET_SELECTION = "get_cowart_selection";
 const TOOL_INSERT_IMAGE = "insert_cowart_image";
+const TOOL_GET_CANVAS = "get_cowart_canvas";
+const TOOL_GET_ANNOTATIONS = "get_cowart_annotations";
+const TOOL_CREATE_HOLDER = "create_cowart_image_holder";
+const TOOL_REPLACE_IMAGE = "replace_cowart_image";
+const AI_IMAGE_HOLDER_LABEL = "AI 图片";
+const AI_IMAGE_HOLDER_DEFAULT_W = 320;
+const AI_IMAGE_HOLDER_DEFAULT_H = 220;
 const PAGE_ID_PREFIX = "page:";
 const PAGE_ASSETS_ROUTE = "/page-assets/";
 const CANVAS_FILE_NAME = "cowart-canvas.json";
@@ -590,6 +597,337 @@ async function insertCowartImage(args = {}) {
   };
 }
 
+function plainTextFromRichText(richText) {
+  if (!richText || typeof richText !== "object") {
+    return typeof richText === "string" ? richText.trim() : "";
+  }
+  const collect = (node) => {
+    if (!node) return "";
+    if (typeof node.text === "string") return node.text;
+    if (Array.isArray(node.content)) return node.content.map(collect).join("");
+    return "";
+  };
+  const blocks = Array.isArray(richText.content) ? richText.content : [richText];
+  return blocks
+    .map(collect)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function shapeTextContent(shape) {
+  return plainTextFromRichText(shape?.props?.richText) || nonEmptyString(shape?.props?.text) || null;
+}
+
+// Absolute page-space offset of a shape's local origin (climbs nested parents).
+function pageOffsetForShape(store, shape) {
+  let x = finiteNumber(shape.x, 0);
+  let y = finiteNumber(shape.y, 0);
+  let parent = store[shape.parentId];
+  const visited = new Set([shape.id]);
+  while (parent?.typeName === "shape" && !visited.has(parent.id)) {
+    visited.add(parent.id);
+    x += finiteNumber(parent.x, 0);
+    y += finiteNumber(parent.y, 0);
+    parent = store[parent.parentId];
+  }
+  return { x, y };
+}
+
+function isAnnotationArrow(shape) {
+  return shape?.typeName === "shape" && shape.type === "arrow" && shape.meta?.cowartAnnotationArrow === true;
+}
+
+function assetSummary(store, shape) {
+  const asset = shape?.props?.assetId ? store[shape.props.assetId] : null;
+  if (!asset) return null;
+  return {
+    id: asset.id,
+    name: asset.props?.name ?? null,
+    src: asset.props?.src ?? null,
+    w: asset.props?.w ?? null,
+    h: asset.props?.h ?? null,
+    mimeType: asset.props?.mimeType ?? null,
+  };
+}
+
+function describeShape(store, shape) {
+  return {
+    id: shape.id,
+    type: shape.type,
+    parentId: shape.parentId,
+    bounds: pageBoundsForShape(store, shape),
+    rotation: finiteNumber(shape.rotation, 0),
+    text: shapeTextContent(shape),
+    isAiImageHolder: shape.meta?.cowartAiImageHolder === true,
+    isAnnotation: isAnnotationArrow(shape),
+    asset: assetSummary(store, shape),
+    meta: shape.meta ?? {},
+  };
+}
+
+// The shape an annotation arrow points at: prefer the smallest shape whose
+// bounds contain the arrow tip; otherwise the nearest shape by center.
+function findAnnotationTarget(store, pageShapes, endPoint, arrowId) {
+  const candidates = pageShapes
+    .filter((shape) => shape.id !== arrowId && shape.type !== "arrow" && !isAnnotationArrow(shape))
+    .map((shape) => ({ shape, bounds: pageBoundsForShape(store, shape) }))
+    .filter((entry) => entry.bounds);
+
+  const containing = candidates.filter(
+    ({ bounds }) =>
+      endPoint.x >= bounds.x &&
+      endPoint.x <= bounds.x + bounds.w &&
+      endPoint.y >= bounds.y &&
+      endPoint.y <= bounds.y + bounds.h
+  );
+
+  if (containing.length > 0) {
+    return containing.reduce((best, entry) =>
+      entry.bounds.w * entry.bounds.h < best.bounds.w * best.bounds.h ? entry : best
+    ).shape;
+  }
+
+  let nearest = null;
+  for (const entry of candidates) {
+    const cx = entry.bounds.x + entry.bounds.w / 2;
+    const cy = entry.bounds.y + entry.bounds.h / 2;
+    const distance = Math.hypot(cx - endPoint.x, cy - endPoint.y);
+    if (!nearest || distance < nearest.distance) nearest = { shape: entry.shape, distance };
+  }
+  return nearest?.shape ?? null;
+}
+
+function resolveTargetPages(store, args, viewState) {
+  const pages = Object.values(store)
+    .filter((record) => record?.typeName === "page")
+    .sort((a, b) => String(a.index ?? "").localeCompare(String(b.index ?? "")));
+  const requestedPageId = nonEmptyString(args.pageId);
+  if (requestedPageId) return pages.filter((page) => page.id === requestedPageId);
+  if (args.allPages === true) return pages;
+  const currentPageId = nonEmptyString(viewState?.currentPageId);
+  const current = pages.find((page) => page.id === currentPageId);
+  return current ? [current] : pages.slice(0, 1);
+}
+
+async function getCowartCanvas(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const viewState = await readViewState(args);
+  const pages = resolveTargetPages(store, args, viewState).map((page) => ({
+    pageId: page.id,
+    name: page.name ?? null,
+    shapes: getPageShapes(store, page.id).map((shape) => describeShape(store, shape)),
+  }));
+  return {
+    cowartUrl,
+    currentPageId: nonEmptyString(viewState?.currentPageId) ?? null,
+    pages,
+  };
+}
+
+async function getCowartAnnotations(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const viewState = await readViewState(args);
+  const annotations = [];
+  for (const page of resolveTargetPages(store, args, viewState)) {
+    const pageShapes = getPageShapes(store, page.id);
+    for (const shape of pageShapes) {
+      if (!isAnnotationArrow(shape)) continue;
+      const offset = pageOffsetForShape(store, shape);
+      const start = shape.props?.start ?? { x: 0, y: 0 };
+      const end = shape.props?.end ?? { x: 0, y: 0 };
+      const startPoint = { x: offset.x + finiteNumber(start.x, 0), y: offset.y + finiteNumber(start.y, 0) };
+      const endPoint = { x: offset.x + finiteNumber(end.x, 0), y: offset.y + finiteNumber(end.y, 0) };
+      const target = findAnnotationTarget(store, pageShapes, endPoint, shape.id);
+      annotations.push({
+        id: shape.id,
+        pageId: page.id,
+        text: shapeTextContent(shape) ?? "",
+        startPoint,
+        endPoint,
+        target: target
+          ? { id: target.id, type: target.type, isAiImageHolder: target.meta?.cowartAiImageHolder === true, asset: assetSummary(store, target) }
+          : null,
+      });
+    }
+  }
+  return { cowartUrl, currentPageId: nonEmptyString(viewState?.currentPageId) ?? null, annotations };
+}
+
+async function persistRecords(cowartUrl, store, snapshot, { put = [], remove = [] }) {
+  try {
+    await mergeCanvasRecords(cowartUrl, { put, remove });
+  } catch (mergeError) {
+    // Older servers without the merge endpoint: fall back to a full save.
+    try {
+      for (const id of remove) delete store[id];
+      for (const record of put) store[record.id] = record;
+      await saveCanvasSnapshot(cowartUrl, snapshot);
+    } catch {
+      throw mergeError;
+    }
+  }
+}
+
+async function createCowartImageHolder(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const { selection } = await readSelectionState(args);
+  const viewState = await readViewState(args);
+
+  const anchorShapeId = nonEmptyString(args.anchorShapeId) || firstSelectedShapeId(selection);
+  const anchorShape = anchorShapeId ? getRecord(store, anchorShapeId, "anchor shape") : null;
+  const pageId =
+    nonEmptyString(args.pageId) ||
+    (anchorShape ? findPageIdForShape(store, anchorShape.id) : null) ||
+    nonEmptyString(viewState?.currentPageId) ||
+    Object.values(store).find((record) => record?.typeName === "page")?.id;
+  if (!pageId || !store[pageId]) throw new Error("Could not determine target pageId.");
+
+  const parentId = pageId;
+  const width = Math.max(1, finiteNumber(args.width, AI_IMAGE_HOLDER_DEFAULT_W));
+  const height = Math.max(1, finiteNumber(args.height, AI_IMAGE_HOLDER_DEFAULT_H));
+  const margin = Math.max(0, finiteNumber(args.margin, 40));
+  const placement = ["right", "left", "below"].includes(args.placement) ? args.placement : "right";
+  const { x, y } = choosePlacement({ store, pageId, parentId, anchorShape, width, height, margin, placement });
+
+  const name = nonEmptyString(args.name) || AI_IMAGE_HOLDER_LABEL;
+  const shapeId = uniqueRecordId(store, "shape", sanitizeIdPart(name, "ai-image"));
+  const index = chooseIndex(store, parentId);
+  const shapeRecord = {
+    x,
+    y,
+    rotation: 0,
+    isLocked: false,
+    opacity: 1,
+    meta: {
+      cowartAiImageHolder: true,
+      cowartAiImageHolderVersion: 1,
+      ...(args.shapeMeta && typeof args.shapeMeta === "object" ? args.shapeMeta : {}),
+    },
+    id: shapeId,
+    type: "frame",
+    props: { w: width, h: height, name, color: "blue" },
+    parentId,
+    index,
+    typeName: "shape",
+  };
+
+  if (!args.dryRun) {
+    await persistRecords(cowartUrl, store, snapshot, { put: [shapeRecord] });
+  }
+
+  return { cowartUrl, pageId, parentId, shapeId, index, bounds: { x, y, w: width, h: height }, dryRun: Boolean(args.dryRun) };
+}
+
+function assetReferencedByOthers(store, assetId, exceptShapeId) {
+  return Object.values(store).some(
+    (record) => record?.typeName === "shape" && record.id !== exceptShapeId && record.props?.assetId === assetId
+  );
+}
+
+async function replaceCowartImage(args = {}) {
+  const imagePath = nonEmptyString(args.imagePath);
+  if (!imagePath) throw new Error("imagePath is required.");
+  const sourceImagePath = pathResolve(imagePath);
+  const sourceStat = await stat(sourceImagePath);
+  if (!sourceStat.isFile()) throw new Error(`imagePath is not a file: ${sourceImagePath}`);
+
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const { selection } = await readSelectionState(args);
+
+  const targetShapeId = nonEmptyString(args.targetShapeId) || nonEmptyString(args.shapeId) || firstSelectedShapeId(selection);
+  if (!targetShapeId) throw new Error("targetShapeId is required (or select the image to replace).");
+  let targetShape = getRecord(store, targetShapeId, "target shape");
+
+  const pageId = findPageIdForShape(store, targetShape.id);
+  if (!pageId) throw new Error(`Could not determine the page for ${targetShapeId}.`);
+
+  // A frame holder: replace the image inside it.
+  if (targetShape.type === "frame") {
+    const child = getPageShapes(store, pageId).find(
+      (shape) => shape.parentId === targetShape.id && shape.type === "image"
+    );
+    if (!child) {
+      throw new Error(`Frame ${targetShapeId} has no image to replace. Use insert_cowart_image with fillAnchor instead.`);
+    }
+    targetShape = child;
+  }
+  if (targetShape.type !== "image") {
+    throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image shape.`);
+  }
+
+  let imageSize = null;
+  try {
+    imageSize = await getImageDimensions(sourceImagePath);
+  } catch {
+    imageSize = null;
+  }
+  const width = finiteNumber(args.displayWidth, finiteNumber(targetShape.props?.w, imageSize?.width ?? 1));
+  const height = finiteNumber(args.displayHeight, finiteNumber(targetShape.props?.h, imageSize?.height ?? 1));
+  const naturalSize = imageSize ?? { width: Math.round(width), height: Math.round(height) };
+
+  const canvasDir = resolveCanvasDir(args);
+  const assetsDir = join(canvasDir, "pages", pageDirName(pageId), "assets");
+  if (!isSafeChildPath(canvasDir, assetsDir)) {
+    throw new Error(`Unsafe page assets directory: ${assetsDir}`);
+  }
+  const { fileName, filePath } = await uniqueFilePath(assetsDir, args.fileName || basename(sourceImagePath));
+  const assetId = uniqueRecordId(store, "asset", sanitizeIdPart(fileName));
+  const oldAssetId = nonEmptyString(targetShape.props?.assetId);
+  const mimeType = mimeTypeForFile(fileName);
+
+  const assetRecord = {
+    id: assetId,
+    typeName: "asset",
+    type: "image",
+    props: {
+      name: fileName,
+      src: pageAssetUrl(pageId, fileName),
+      w: naturalSize.width,
+      h: naturalSize.height,
+      fileSize: sourceStat.size,
+      mimeType,
+      isAnimated: false,
+    },
+    meta: args.assetMeta && typeof args.assetMeta === "object" ? args.assetMeta : {},
+  };
+
+  const updatedShape = {
+    ...targetShape,
+    props: { ...targetShape.props, assetId, w: width, h: height },
+  };
+
+  const removeOldAsset =
+    oldAssetId && args.keepOldAsset !== true && !assetReferencedByOthers(store, oldAssetId, targetShape.id);
+
+  if (!args.dryRun) {
+    await mkdir(assetsDir, { recursive: true });
+    await copyFile(sourceImagePath, filePath);
+    await persistRecords(cowartUrl, store, snapshot, {
+      put: [assetRecord, updatedShape],
+      remove: removeOldAsset ? [oldAssetId] : [],
+    });
+  }
+
+  return {
+    cowartUrl,
+    pageId,
+    shapeId: targetShape.id,
+    assetId,
+    previousAssetId: oldAssetId ?? null,
+    removedPreviousAsset: Boolean(removeOldAsset),
+    assetFile: filePath,
+    assetUrl: assetRecord.props.src,
+    imageSize: naturalSize,
+    bounds: { w: width, h: height },
+    dryRun: Boolean(args.dryRun),
+  };
+}
+
 function toolDefinitions() {
   return [
     {
@@ -660,6 +998,93 @@ function toolDefinitions() {
         openWorldHint: false,
       },
     },
+    {
+      name: TOOL_GET_CANVAS,
+      title: "Get Cowart Canvas",
+      description:
+        "Return a structured summary of the Cowart canvas (current page by default) so the agent can reason about what is on the board: each shape's id, type, page-space bounds, text, asset, and whether it is an AI 图片 holder or an annotation.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL, for example http://127.0.0.1:43217." },
+          pageId: { type: "string", description: "Limit to a single page id. Defaults to the current view-state page." },
+          allPages: { type: "boolean", description: "Include every page instead of just the current one. Defaults to false." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: TOOL_GET_ANNOTATIONS,
+      title: "Get Cowart Annotations",
+      description:
+        "Return Cowart 批注 annotations as structured data: each annotation arrow's text label and the shape it points at (resolved from the arrow tip), so edit intent can be read without screenshotting the canvas.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          pageId: { type: "string", description: "Limit to a single page id. Defaults to the current view-state page." },
+          allPages: { type: "boolean", description: "Include annotations on every page. Defaults to false." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: TOOL_CREATE_HOLDER,
+      title: "Create Cowart Image Holder",
+      description:
+        "Create an AI 图片 holder (tldraw frame) on the canvas, matching the holder the UI tool creates, placed beside an anchor or in a clear page area. Use to set up a slot before generating an image into it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          pageId: { type: "string", description: "Target page id. Optional when an anchor or view-state page is available." },
+          anchorShapeId: { type: "string", description: "Existing shape id to place the holder beside." },
+          placement: { type: "string", enum: ["right", "left", "below"], description: "Placement direction from the anchor. Defaults to right." },
+          margin: { type: "number", description: "Canvas units between the holder and nearby shapes. Defaults to 40." },
+          width: { type: "number", description: "Holder width in canvas units. Defaults to 320." },
+          height: { type: "number", description: "Holder height in canvas units. Defaults to 220." },
+          name: { type: "string", description: "Holder label. Defaults to AI 图片." },
+          shapeMeta: { type: "object", description: "Additional tldraw shape metadata." },
+          dryRun: { type: "boolean", description: "Calculate placement without saving." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: TOOL_REPLACE_IMAGE,
+      title: "Replace Cowart Image",
+      description:
+        "Replace the bitmap of an existing image shape in place (the 替换 flow), keeping its position and size. If given a frame holder, replaces the image inside it. Copies the new bitmap into the page assets folder and updates the asset reference.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          imagePath: { type: "string", description: "Absolute local bitmap path to swap in." },
+          targetShapeId: { type: "string", description: "Image shape id to replace, or a frame holder whose image should be replaced. Falls back to the current selection." },
+          shapeId: { type: "string", description: "Alias for targetShapeId." },
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          fileName: { type: "string", description: "Optional destination filename under the page assets folder." },
+          displayWidth: { type: "number", description: "New displayed width. Defaults to the existing shape width." },
+          displayHeight: { type: "number", description: "New displayed height. Defaults to the existing shape height." },
+          keepOldAsset: { type: "boolean", description: "Keep the previous asset record/file instead of removing an now-unreferenced one. Defaults to false." },
+          assetMeta: { type: "object", description: "Additional tldraw asset metadata." },
+          dryRun: { type: "boolean", description: "Calculate the replacement without copying or saving." },
+        },
+        required: ["imagePath"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
   ];
 }
 
@@ -698,6 +1123,62 @@ async function handleToolCall(id, params) {
     return;
   }
 
+  if (params?.name === TOOL_GET_CANVAS) {
+    const result = await getCowartCanvas(params.arguments ?? {});
+    const totalShapes = result.pages.reduce((sum, page) => sum + page.shapes.length, 0);
+    const summary = result.pages.length === 0
+      ? "Cowart canvas has no pages."
+      : result.pages
+          .map((page) => `${page.name ?? page.pageId} (${page.pageId}): ${page.shapes.length} shape(s)`)
+          .join("\n") + `\n${totalShapes} shape(s) total.`;
+    sendResult(id, { content: [{ type: "text", text: summary }], structuredContent: result });
+    return;
+  }
+
+  if (params?.name === TOOL_GET_ANNOTATIONS) {
+    const result = await getCowartAnnotations(params.arguments ?? {});
+    const summary = result.annotations.length === 0
+      ? "No Cowart annotations found."
+      : result.annotations
+          .map((annotation) => {
+            const target = annotation.target
+              ? ` -> ${annotation.target.id} [${annotation.target.type}]${annotation.target.asset?.name ? ` (${annotation.target.asset.name})` : ""}`
+              : " -> (no target)";
+            return `${annotation.id}: "${annotation.text}"${target}`;
+          })
+          .join("\n");
+    sendResult(id, { content: [{ type: "text", text: summary }], structuredContent: result });
+    return;
+  }
+
+  if (params?.name === TOOL_CREATE_HOLDER) {
+    const result = await createCowartImageHolder(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned" : "Created"} holder ${result.shapeId} on ${result.pageId} at (${result.bounds.x}, ${result.bounds.y}).`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
+  if (params?.name === TOOL_REPLACE_IMAGE) {
+    const result = await replaceCowartImage(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned replacement of" : "Replaced"} ${result.shapeId} asset -> ${result.assetId}${result.removedPreviousAsset ? " (old asset removed)" : ""}.`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
 }
 
@@ -713,7 +1194,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state. Use get_cowart_selection for persisted browser selection and insert_cowart_image to place local bitmap assets into the running Cowart canvas without hand-writing tldraw records.",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place).",
     });
     return;
   }

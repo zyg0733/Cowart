@@ -31,6 +31,8 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
 
    Ignore editor chrome such as toolbars, blue selection outlines, resize handles, cursor icons, and unrelated neighboring images.
 
+   Once the screenshot has identified the target image, you may call the Cowart MCP `get_cowart_annotations` tool to read the exact 批注 text and the shape each arrow points at, instead of transcribing red label text from the screenshot. This is more reliable and cheaper than OCR. Use it only to read the annotations belonging to the image the screenshot already identified — do not scan the whole canvas to discover new edits, and still respect the guardrails below.
+
 3. Choose the source image for generation.
 
    Use the clean underlying image content visible in the provided screenshot as the visual base whenever possible.

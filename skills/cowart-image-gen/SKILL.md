@@ -146,6 +146,7 @@ meta flag. Support both shapes.
 ## Notes
 
 - If the holder is a legacy rotated `geo` rectangle, preserve the same `rotation` on the image. For `frame` holders, the frame owns placement and the child image should stay unrotated inside it.
-- If there is already a generated image for the same holder and the user says "替换", remove or update that generated image shape instead of piling another copy on top.
+- To create a holder on demand (only when the user asks for one), prefer the Cowart MCP `create_cowart_image_holder` tool instead of hand-writing a `frame` record. It mirrors the UI's AI 图片 holder exactly and places it beside an anchor or in a clear area.
+- If there is already a generated image for the same holder and the user says "替换", prefer the Cowart MCP `replace_cowart_image` tool (pass the existing image shape id, or the frame holder whose image should be swapped) instead of piling another copy on top. It swaps the bitmap in place, keeps position and size, and removes the now-unreferenced old asset.
 - Do not refuse generation solely because no `AI 图片` holder is selected. Generate the bitmap and insert it into the current Cowart page.
 - Never overwrite an existing asset file without an explicit replace request; use a timestamped filename.

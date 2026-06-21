@@ -74,7 +74,7 @@ const annotationToolIcon = (
 )
 
 function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = false } = {}) {
-  if (!isCanvasSnapshot(snapshot)) return 0
+  if (!isCanvasSnapshot(snapshot)) return { changed: 0, addedShapeIds: [] }
 
   const migratedSnapshot = editor.store.migrateSnapshot(snapshot)
   const { recordsToPut, idsToRemove, switchToPageId } = diffRemoteSnapshot(
@@ -83,7 +83,13 @@ function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = fa
     { preserveLocalChanges, currentPageId: editor.getCurrentPageId() }
   )
 
-  if (recordsToPut.length === 0 && idsToRemove.length === 0) return 0
+  if (recordsToPut.length === 0 && idsToRemove.length === 0) return { changed: 0, addedShapeIds: [] }
+
+  // Shapes that did not exist locally before this apply = newly added remotely
+  // (e.g. an agent insert). Captured before the put so callers can surface them.
+  const addedShapeIds = recordsToPut
+    .filter((record) => record.typeName === 'shape' && !editor.store.get(record.id))
+    .map((record) => record.id)
 
   // Apply additions/updates first so a surviving page we may switch to exists.
   if (recordsToPut.length > 0) {
@@ -99,7 +105,7 @@ function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = fa
     })
   }
 
-  return recordsToPut.length + idsToRemove.length
+  return { changed: recordsToPut.length + idsToRemove.length, addedShapeIds }
 }
 
 function getAiImageHolderMeta() {
@@ -720,11 +726,104 @@ function writeCowartSelectionState(selectionSnapshot) {
   })
 }
 
+const ONBOARDING_DISMISSED_KEY = 'cowart-onboarding-dismissed'
+const IS_ZH = typeof navigator !== 'undefined' && (navigator.language || '').toLowerCase().startsWith('zh')
+
+function readOnboardingDismissed() {
+  try {
+    return localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+const ONBOARDING_COPY = IS_ZH
+  ? {
+      title: '欢迎使用 Cowart 画布',
+      subtitle: '这是你和 Codex 共享的无限画布。',
+      items: [
+        ['A', '按 A 或从工具栏拖出「AI 图片」框，让 Codex 生成图片填入'],
+        ['C', '按 C 批注图片，让 Codex 按批注生成修订图'],
+        ['✎', '让 Codex 在画布上作图（流程图、标注），或把结果导出为图片']
+      ],
+      dismiss: '开始使用'
+    }
+  : {
+      title: 'Welcome to the Cowart canvas',
+      subtitle: 'An infinite canvas you share with Codex.',
+      items: [
+        ['A', 'Press A (or drag from the toolbar) to add an AI image holder, then ask Codex to fill it'],
+        ['C', 'Press C to annotate an image, then ask Codex to generate a revision'],
+        ['✎', 'Ask Codex to draw shapes (flowcharts, labels) or export the canvas as an image']
+      ],
+      dismiss: 'Get started'
+    }
+
+function CowartEmptyOverlay({ onDismiss }) {
+  return (
+    <div className="cowart-empty">
+      <div className="cowart-empty-card" role="dialog" aria-label={ONBOARDING_COPY.title}>
+        <h1 className="cowart-empty-title">{ONBOARDING_COPY.title}</h1>
+        <p className="cowart-empty-subtitle">{ONBOARDING_COPY.subtitle}</p>
+        <ul className="cowart-empty-list">
+          {ONBOARDING_COPY.items.map(([key, text]) => (
+            <li key={key} className="cowart-empty-item">
+              <span className="cowart-empty-key">{key}</span>
+              <span>{text}</span>
+            </li>
+          ))}
+        </ul>
+        <button className="cowart-empty-dismiss" type="button" onClick={onDismiss}>
+          {ONBOARDING_COPY.dismiss}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const TOAST_COPY = IS_ZH
+  ? { label: (n) => `Codex 更新了画布 · ${n} 个新图形`, locate: '查看', dismiss: '关闭' }
+  : { label: (n) => `Codex updated the canvas · ${n} new shape${n === 1 ? '' : 's'}`, locate: 'Show', dismiss: 'Dismiss' }
+
+function CowartAgentToast({ activity, onLocate, onDismiss }) {
+  return (
+    <div className="cowart-toast" role="status" aria-live="polite">
+      <span className="cowart-toast-dot" aria-hidden="true" />
+      <span className="cowart-toast-text">{TOAST_COPY.label(activity.count)}</span>
+      <button className="cowart-toast-btn" type="button" onClick={onLocate}>
+        {TOAST_COPY.locate}
+      </button>
+      <button className="cowart-toast-close" type="button" aria-label={TOAST_COPY.dismiss} onClick={onDismiss}>
+        ×
+      </button>
+    </div>
+  )
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState()
   const [viewState, setViewState] = useState()
   const [loadError, setLoadError] = useState(null)
+  const [isCanvasEmpty, setIsCanvasEmpty] = useState(false)
+  const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed)
+  const [agentActivity, setAgentActivity] = useState(null)
   const revisionRef = useRef(null)
+  const editorRef = useRef(null)
+
+  useEffect(() => {
+    if (!agentActivity) return
+    const timer = window.setTimeout(() => setAgentActivity(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [agentActivity])
+
+  const dismissOnboarding = useCallback(() => {
+    setOnboardingDismissed(true)
+    try {
+      localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1')
+    } catch {
+      // ignore storage failures; dismissal still holds for this session
+    }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -765,6 +864,7 @@ export default function App() {
     window.__cowartEditor = editor
     window.__cowartSelection = () => getCowartSelection(editor)
     window.__cowartViewState = () => getCowartViewState(editor)
+    editorRef.current = editor
     let lastSyncedSelectionState = ''
     let isSelectionStateSaving = false
     let hasPendingSelectionState = false
@@ -777,6 +877,10 @@ export default function App() {
     })
 
     async function syncSelectionState() {
+      // Cheap to recompute on the existing 250ms cadence; setState bails when
+      // unchanged. Catches shape add/remove and page switches for the empty state.
+      setIsCanvasEmpty(editor.getCurrentPageShapeIds().size === 0)
+
       const selectionSnapshot = getCowartSelectionSnapshot(editor)
       writeCowartSelectionState(selectionSnapshot)
 
@@ -931,12 +1035,19 @@ export default function App() {
         const effectivePreserve =
           preserveLocalChanges ||
           (preFetchStore && storeDiffersFromBaseline(editor.store.getStoreSnapshot().store, preFetchStore))
-        const changedRecords = applyRemoteCanvasSnapshot(editor, canvasData.snapshot, {
+        const { changed, addedShapeIds } = applyRemoteCanvasSnapshot(editor, canvasData.snapshot, {
           preserveLocalChanges: effectivePreserve
         })
         revisionRef.current = canvasData.revision ?? revisionRef.current
 
-        if (changedRecords > 0 && effectivePreserve) {
+        // This path only runs for writes by someone else (the agent / another
+        // tab); our own saves are skipped via the revision check. Surface newly
+        // added shapes so the user notices Codex changed the canvas.
+        if (addedShapeIds.length > 0) {
+          setAgentActivity({ count: addedShapeIds.length, shapeIds: addedShapeIds, at: Date.now() })
+        }
+
+        if (changed > 0 && effectivePreserve) {
           hasUnsavedChanges = true
           if (isSaving) {
             hasPendingSave = true
@@ -1056,6 +1167,7 @@ export default function App() {
         delete window.__cowartSelection
         delete window.__cowartViewState
       }
+      if (editorRef.current === editor) editorRef.current = null
       document.getElementById(SELECTION_STATE_ELEMENT_ID)?.remove()
       unsubscribe()
       unsubscribeAnnotationEditingToolLock()
@@ -1091,6 +1203,24 @@ export default function App() {
         components={cowartComponents}
         tools={[CowartAnnotationTool]}
       />
+      {isCanvasEmpty && !onboardingDismissed && (
+        <CowartEmptyOverlay onDismiss={dismissOnboarding} />
+      )}
+      {agentActivity && (
+        <CowartAgentToast
+          activity={agentActivity}
+          onLocate={() => {
+            const editor = editorRef.current
+            if (editor && agentActivity.shapeIds?.length) {
+              editor.setCurrentTool('select')
+              editor.select(...agentActivity.shapeIds)
+              editor.zoomToSelection({ animation: { duration: 320 } })
+            }
+            setAgentActivity(null)
+          }}
+          onDismiss={() => setAgentActivity(null)}
+        />
+      )}
     </main>
   )
 }

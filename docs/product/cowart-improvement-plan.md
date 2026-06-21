@@ -48,8 +48,13 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
 - 完全无头、无需浏览器：记录由服务端按 tldraw 5 prop 规格构建，对 agent 传入的样式枚举做白名单兜底；批量、`dryRun` 可预览。
 - 验证：每条生成记录都用**真实 tldraw schema 校验**（`schema.types.shape.validator`），无委派边界。
 
-### Phase 4 — 打磨
-- 空画布首启引导；bundle 代码分割（当前 1.8MB 警告）；多页导航。
+### Phase 4 — 打磨（已落地，含重新定范围）
+原计划三项，落地前用证据复核后重排：
+- ✅ **空画布首启引导**：空画布时显示可关闭的引导卡（按 A 建 AI 图片框 / 按 C 批注 / 让 Codex 作图·导出），本地化 + localStorage 记忆关闭。
+- ✅ **Agent 活动提示**：MCP 写入落地经实时刷新后，底部弹出「Codex 更新了画布 · N 个新图形」轻提示，带「查看」可选中并缩放到新图形，强化人机协作主循环。
+- ❌ **bundle 代码分割（砍）**：经核实运行时始终走 vite dev（`start-canvas.sh` exec `npm run dev`），`dist/` 不在热路径，拆包属伪优化；如需仅消除构建告警可后续按需做。
+- ❌ **多页导航（砍）**：tldraw 默认 PageMenu 已提供人类多页导航，叠加 per-page 持久化 + 删除同步即满足；剩余「agent 建/选页」属作图扩展，按需再做。
+- 验证：前端项用真实浏览器（Claude Preview）截图与 DOM 断言验证——空态卡渲染/隐藏、toast 文案与「查看」缩放、无 console 报错。
 
 ## 5. 稳定落地原则
 

@@ -56,6 +56,23 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
 - ❌ **多页导航（砍）**：tldraw 默认 PageMenu 已提供人类多页导航，叠加 per-page 持久化 + 删除同步即满足；剩余「agent 建/选页」属作图扩展，按需再做。
 - 验证：前端项用真实浏览器（Claude Preview）截图与 DOM 断言验证——空态卡渲染/隐藏、toast 文案与「查看」缩放、无 console 报错。
 
+### Phase 5 — tldraw × 图像模型深度结合（已落地）
+详见 [phase5-plan.md](phase5-plan.md)：5.0 base64 直收 / 5a 箭头绑定 / 5b 草图→图 /
+5c 区域蒙版编辑 / 5d 迭代血缘 + 活的 AI 图片 holder（自定义 ShapeUtil，含可编辑 prompt、
+生成中态）。
+
+### Phase 6 — 让 Codex image gen 紧密结合（已落地）
+主题：**image_gen 的每个输入都变成一个画布手势**（"摆出来，别只描述"）。
+- ✅ **参考板 / 多图合成（input_image）**：holder 的 `meta.cowartReferences` 记录参考图；
+  `get_cowart_references` 把它们（含 base64）解析出来喂给 `input_image`。
+- ✅ **风格锚点（style_match）**：`meta.cowartStyleRef` 标记风格参考图，`get_cowart_references`
+  以 `role:"style"` 区分 → 成套产出风格一致。
+- ✅ **画尺寸即定尺寸**：`get_cowart_canvas` 为每个 shape 返回 `suggestedGenSize`（÷16、
+  1:3–3:1、≤3840 的最近合法 gpt-image 尺寸）——画多大生成多大。
+- ✅ **调用可复现**：`replace_cowart_image` / `update_cowart_holder` 接受 `genParams`，
+  存入 `meta.cowartGen`（prompt+参考+尺寸+model+seed）→ 可按原设置重生成/分叉。
+- 验证：无头 13 项（含 `nearestGenSize` 极值裁剪、引用解析角色/base64、provenance 持久化）。
+
 ## 5. 稳定落地原则
 
 1. **加法不破坏**：只新增 MCP 工具，不改既有契约；旧 skill/curl 兜底仍可用。

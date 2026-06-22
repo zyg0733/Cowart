@@ -10,7 +10,7 @@ Cowart is a local infinite-canvas plugin for Codex. It brings a tldraw-powered c
 - Persist canvas pages and image assets in the active project directory.
 - Create AI image holders on the canvas and ask Codex to generate images into the selected holder.
 - Provide Cowart annotation screenshots and let Codex generate clean revised images beside the original.
-- Use Cowart MCP tools to perceive and act on the canvas: read selection state and structured canvas content, parse annotations (text and the shape each points at), insert images, create AI image holders, replace images, author shapes (text/sticky/arrow/geometry; arrows can bind to nodes for follow-on-move flowchart connectors), build inpainting masks for region-only edits, track image revision lineage (connectors between versions), export views to image files, and save page-local assets (the AI image holder is a custom stateful shape).
+- Use Cowart MCP tools to perceive and act on the canvas: read selection state and structured canvas content, parse annotations (text and the shape each points at), insert images, create AI image holders, replace images, author shapes (text/sticky/arrow/geometry; arrows can bind to nodes for follow-on-move flowchart connectors), build inpainting masks for region-only edits, track image revision lineage (connectors between versions), suggest a generation size from the drawn box, resolve multi-image references and a style anchor to feed generation, export views to image files, and save page-local assets (the AI image holder is a custom stateful shape).
 - Shared-canvas UX: a first-run empty-canvas guide, and a lightweight toast when Codex updates the canvas (one click to locate the new content).
 
 ## Installation

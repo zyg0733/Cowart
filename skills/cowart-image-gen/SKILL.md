@@ -67,13 +67,23 @@ via `insert_cowart_image` `fillAnchor`). Support all of them.
 
    Holder workflow: use the selected holder's `props.w` and `props.h` as the size contract. The generated image should match the holder aspect ratio as closely as possible.
 
-   If the holder `type` is `cowart-ai-image` (the current holder): before you start
-   generating, mark it busy with `update_cowart_holder` `status: "generating"` (the
-   holder shows a spinner the user sees via live refresh). Read its `props.prompt`
-   (the user may have typed it directly on the holder) and use it. Then fill it with
-   `replace_cowart_image` (pass the holder id + the generated `imageBase64`) — this
-   sets the holder's own image and marks it `filled`; do not create a separate image
-   shape. (`update_cowart_holder` can also set/clear the holder prompt.)
+   If the holder `type` is `cowart-ai-image` (the current holder):
+
+   - **Size**: use the holder's `suggestedGenSize` from `get_cowart_canvas` as the
+     generation size — it is already a valid gpt-image size (multiple of 16, aspect
+     1:3–3:1) matching the box the user drew, so the result fits without cropping.
+   - **References / style**: if the holder has reference images, resolve them with
+     `get_cowart_references` (it reads the holder's `meta.cowartReferences` /
+     `meta.cowartStyleRef`, or pass explicit `shapeIds`) and pass their base64 to
+     image generation as `input_image` — the one tagged `role: "style"` is the style
+     reference (style_match), the rest are content/composition references.
+   - **Busy state**: before generating, mark it busy with `update_cowart_holder`
+     `status: "generating"` (the holder shows a spinner the user sees via live refresh).
+   - Read its `props.prompt` (the user may have typed it directly on the holder).
+   - **Fill**: `replace_cowart_image` (holder id + generated `imageBase64`) sets the
+     holder's own image and marks it `filled`; do not create a separate image shape.
+     Pass `genParams` (prompt, references, size, model, seed) to record the call on the
+     shape (`meta.cowartGen`) so it can be reproduced or forked later.
 
    If the holder `type` is `frame` (legacy), insert the generated image as a child of the frame:
 

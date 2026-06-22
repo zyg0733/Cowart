@@ -5,7 +5,7 @@ import zlib from "node:zlib";
 import { generateKeyBetween } from "fractional-indexing";
 
 const SERVER_NAME = "Cowart MCP";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 const TOOL_GET_SELECTION = "get_cowart_selection";
 const TOOL_INSERT_IMAGE = "insert_cowart_image";
 const TOOL_GET_CANVAS = "get_cowart_canvas";
@@ -16,6 +16,7 @@ const TOOL_EXPORT_VIEW = "export_cowart_view";
 const TOOL_ADD_SHAPES = "add_cowart_shapes";
 const TOOL_MAKE_MASK = "make_cowart_mask";
 const TOOL_UPDATE_HOLDER = "update_cowart_holder";
+const TOOL_GET_REFERENCES = "get_cowart_references";
 const AI_IMAGE_HOLDER_STATUSES = ["empty", "requested", "generating", "filled"];
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
@@ -798,7 +799,27 @@ function assetSummary(store, shape) {
   };
 }
 
+// Nearest image-generation size for a shape's display box: both sides a multiple
+// of 16, aspect clamped to [1:3, 3:1], capped at 3840 (gpt-image-2 constraints).
+function nearestGenSize(w, h) {
+  const MIN_RATIO = 1 / 3;
+  const MAX_RATIO = 3;
+  const MAX = 3840;
+  const MULT = 16;
+  let aw = Math.max(1, finiteNumber(w, 1));
+  let ah = Math.max(1, finiteNumber(h, 1));
+  const ratio = aw / ah;
+  if (ratio > MAX_RATIO) ah = aw / MAX_RATIO;
+  else if (ratio < MIN_RATIO) aw = ah * MIN_RATIO;
+  const scale = Math.min(1, MAX / Math.max(aw, ah));
+  aw *= scale;
+  ah *= scale;
+  const round16 = (v) => Math.min(MAX, Math.max(MULT, Math.round(v / MULT) * MULT));
+  return { width: round16(aw), height: round16(ah) };
+}
+
 function describeShape(store, shape) {
+  const isHolder = shape.meta?.cowartAiImageHolder === true;
   return {
     id: shape.id,
     type: shape.type,
@@ -806,9 +827,10 @@ function describeShape(store, shape) {
     bounds: pageBoundsForShape(store, shape),
     rotation: finiteNumber(shape.rotation, 0),
     text: shapeTextContent(shape),
-    isAiImageHolder: shape.meta?.cowartAiImageHolder === true,
+    isAiImageHolder: isHolder,
     isAnnotation: isAnnotationArrow(shape),
     asset: assetSummary(store, shape),
+    suggestedGenSize: nearestGenSize(shape.props?.w ?? pageBoundsForShape(store, shape)?.w, shape.props?.h ?? pageBoundsForShape(store, shape)?.h),
     meta: shape.meta ?? {},
   };
 }
@@ -1040,6 +1062,10 @@ async function replaceCowartImage(args = {}) {
   const updatedShape = {
     ...targetShape,
     props: { ...targetShape.props, assetId, w: width, h: height, ...(isHolder ? { status: "filled" } : {}) },
+    meta:
+      args.genParams && typeof args.genParams === "object"
+        ? { ...(targetShape.meta ?? {}), cowartGen: args.genParams }
+        : targetShape.meta,
   };
 
   const removeOldAsset =
@@ -1634,6 +1660,7 @@ async function updateCowartHolder(args = {}) {
   }
 
   const props = { ...holder.props };
+  const meta = { ...holder.meta };
   let changed = false;
   if (nonEmptyString(args.status)) {
     if (!AI_IMAGE_HOLDER_STATUSES.includes(args.status)) {
@@ -1646,13 +1673,93 @@ async function updateCowartHolder(args = {}) {
     props.prompt = args.prompt;
     changed = true;
   }
-  if (!changed) throw new Error("Provide status and/or prompt to update.");
+  // Reference board: which canvas images feed this holder's generation, and which
+  // (if any) is the style reference. Validate they exist as shapes.
+  if (Array.isArray(args.references)) {
+    const refs = args.references.filter((id) => typeof id === "string");
+    for (const id of refs) if (!store[id] || store[id].typeName !== "shape") throw new Error(`reference is not a shape: ${id}`);
+    meta.cowartReferences = refs;
+    changed = true;
+  }
+  if (args.styleRef !== undefined) {
+    const styleRef = nonEmptyString(args.styleRef);
+    if (styleRef && (!store[styleRef] || store[styleRef].typeName !== "shape")) throw new Error(`styleRef is not a shape: ${styleRef}`);
+    if (styleRef) meta.cowartStyleRef = styleRef;
+    else delete meta.cowartStyleRef;
+    changed = true;
+  }
+  if (args.genParams && typeof args.genParams === "object") {
+    meta.cowartGen = args.genParams; // full generation call for reproducibility
+    changed = true;
+  }
+  if (!changed) throw new Error("Provide status, prompt, references, styleRef, or genParams to update.");
 
-  const updated = { ...holder, props };
+  const updated = { ...holder, props, meta };
   if (!args.dryRun) {
     await persistRecords(cowartUrl, store, snapshot, { put: [updated] });
   }
-  return { cowartUrl, holderId, status: props.status, prompt: props.prompt, dryRun: Boolean(args.dryRun) };
+  return {
+    cowartUrl,
+    holderId,
+    status: props.status,
+    prompt: props.prompt,
+    references: meta.cowartReferences ?? null,
+    styleRef: meta.cowartStyleRef ?? null,
+    genParams: meta.cowartGen ?? null,
+    dryRun: Boolean(args.dryRun),
+  };
+}
+
+async function getCowartReferences(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const { selection } = await readSelectionState(args);
+  const canvasDir = resolveCanvasDir(args);
+
+  let ids = Array.isArray(args.shapeIds) ? args.shapeIds.filter((id) => typeof id === "string") : null;
+  let styleRefId = nonEmptyString(args.styleRef);
+  const holderId = nonEmptyString(args.holderId);
+  if (holderId) {
+    const holder = getRecord(store, holderId, "holder");
+    if (!ids) ids = Array.isArray(holder.meta?.cowartReferences) ? holder.meta.cowartReferences : [];
+    if (!styleRefId) styleRefId = nonEmptyString(holder.meta?.cowartStyleRef);
+  }
+  if (!ids && !styleRefId) {
+    const selectedIds = (selection?.selectedShapes ?? []).map((shape) => shape.id);
+    ids = selectedIds.length > 0 ? selectedIds : null;
+  }
+  const allIds = [...new Set([...(ids ?? []), ...(styleRefId ? [styleRefId] : [])])];
+  if (allIds.length === 0) {
+    throw new Error("No references found. Provide holderId (with references in its meta), shapeIds, styleRef, or select reference images.");
+  }
+
+  const references = [];
+  for (const id of allIds) {
+    const shape = store[id];
+    if (!shape) {
+      references.push({ id, found: false });
+      continue;
+    }
+    const assetFile = localAssetFileForShape(store, shape, canvasDir);
+    const asset = shape.props?.assetId ? store[shape.props.assetId] : null;
+    const reference = {
+      id,
+      found: true,
+      role: id === styleRefId ? "style" : "reference",
+      type: shape.type,
+      assetFile,
+      naturalSize: asset ? { width: asset.props?.w ?? null, height: asset.props?.h ?? null } : null,
+    };
+    if (args.returnBase64 === true && assetFile) {
+      try {
+        reference.base64 = (await readFile(assetFile)).toString("base64");
+      } catch {
+        reference.base64 = null;
+      }
+    }
+    references.push(reference);
+  }
+  return { cowartUrl, references };
 }
 
 function toolDefinitions() {
@@ -1815,6 +1922,7 @@ function toolDefinitions() {
           displayHeight: { type: "number", description: "New displayed height. Defaults to the existing shape height." },
           keepOldAsset: { type: "boolean", description: "Keep the previous asset record/file instead of removing an now-unreferenced one. Defaults to false." },
           assetMeta: { type: "object", description: "Additional tldraw asset metadata." },
+          genParams: { type: "object", description: "Full generation call (prompt, refs, size, model, seed, …) recorded on the shape (meta.cowartGen) for reproducibility." },
           dryRun: { type: "boolean", description: "Calculate the replacement without copying or saving." },
         },
         additionalProperties: false,
@@ -1933,11 +2041,34 @@ function toolDefinitions() {
           shapeId: { type: "string", description: "Alias for holderId." },
           status: { type: "string", enum: ["empty", "requested", "generating", "filled"], description: "New holder status." },
           prompt: { type: "string", description: "New prompt text shown on the holder (empty string clears it)." },
+          references: { type: "array", items: { type: "string" }, description: "Shape ids of canvas images to use as input_image references for this holder's generation (stored in meta.cowartReferences)." },
+          styleRef: { type: "string", description: "Shape id of a style-reference image (style_match); stored in meta.cowartStyleRef. Empty string clears it." },
+          genParams: { type: "object", description: "Full generation call (prompt, refs, size, model, seed, …) to record for reproducibility (stored in meta.cowartGen)." },
           dryRun: { type: "boolean", description: "Resolve the update without saving." },
         },
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: TOOL_GET_REFERENCES,
+      title: "Get Cowart References",
+      description:
+        "Resolve the reference images for a generation into local files (and optional base64) so they can be passed to image generation as input_image. Reads a holder's meta.cowartReferences / meta.cowartStyleRef, or explicit shapeIds / styleRef, or the current selection. Each result is tagged role 'reference' or 'style'.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          holderId: { type: "string", description: "Holder whose meta.cowartReferences / cowartStyleRef define the references." },
+          shapeIds: { type: "array", items: { type: "string" }, description: "Explicit reference image shape ids." },
+          styleRef: { type: "string", description: "Explicit style-reference image shape id." },
+          returnBase64: { type: "boolean", description: "Also return each reference's base64 bytes to feed image generation directly. Defaults to false." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
   ];
 }
@@ -2067,11 +2198,20 @@ async function handleToolCall(id, params) {
       content: [
         {
           type: "text",
-          text: `${result.dryRun ? "Planned update for" : "Updated"} holder ${result.holderId}: status=${result.status}${result.prompt ? `, prompt="${result.prompt}"` : ""}.`,
+          text: `${result.dryRun ? "Planned update for" : "Updated"} holder ${result.holderId}: status=${result.status}${result.prompt ? `, prompt="${result.prompt}"` : ""}${result.references ? `, refs=${result.references.length}` : ""}.`,
         },
       ],
       structuredContent: result,
     });
+    return;
+  }
+
+  if (params?.name === TOOL_GET_REFERENCES) {
+    const result = await getCowartReferences(params.arguments ?? {});
+    const summary = result.references
+      .map((reference) => `${reference.id} [${reference.role ?? "?"}]${reference.found === false ? " (missing)" : reference.assetFile ? "" : " (no local file)"}`)
+      .join("\n");
+    sendResult(id, { content: [{ type: "text", text: summary || "No references." }], structuredContent: result });
     return;
   }
 
@@ -2104,7 +2244,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area. Holder status: update_cowart_holder sets a cowart-ai-image holder's status (e.g. 'generating' before you start) or prompt.",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area. Holder status: update_cowart_holder sets a cowart-ai-image holder's status (e.g. 'generating' before you start), prompt, references, styleRef, or genParams. References: get_cowart_references resolves a holder's reference/style images into files/base64 to pass as input_image. get_cowart_canvas also returns each shape's suggestedGenSize (a valid gpt-image size matching its box).",
     });
     return;
   }

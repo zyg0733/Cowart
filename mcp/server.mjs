@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import readline from "node:readline";
+import zlib from "node:zlib";
 import { generateKeyBetween } from "fractional-indexing";
 
 const SERVER_NAME = "Cowart MCP";
@@ -13,6 +14,7 @@ const TOOL_CREATE_HOLDER = "create_cowart_image_holder";
 const TOOL_REPLACE_IMAGE = "replace_cowart_image";
 const TOOL_EXPORT_VIEW = "export_cowart_view";
 const TOOL_ADD_SHAPES = "add_cowart_shapes";
+const TOOL_MAKE_MASK = "make_cowart_mask";
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
 const AI_IMAGE_HOLDER_DEFAULT_H = 220;
@@ -1141,6 +1143,162 @@ async function exportCowartView(args = {}) {
   return result;
 }
 
+// --- Region-aware edit (mask / inpainting) ---------------------------------
+// A mask is just a rectangle, so we encode the PNG headlessly with zlib rather
+// than depending on a browser canvas. Convention: transparent (alpha 0) marks
+// the area to edit; opaque marks pixels to preserve (OpenAI edit-mask semantics).
+
+const PNG_CRC_TABLE = (() => {
+  const table = new Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function pngCrc32(buffer) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buffer.length; i += 1) c = PNG_CRC_TABLE[(c ^ buffer[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(pngCrc32(body), 0);
+  return Buffer.concat([length, body, crc]);
+}
+
+function encodeMaskPng(width, height, region, { invert = false } = {}) {
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (stride + 1);
+    raw[rowStart] = 0; // filter type: none
+    const inRow = y >= region.y && y < region.y + region.h;
+    for (let x = 0; x < width; x += 1) {
+      const inRegion = inRow && x >= region.x && x < region.x + region.w;
+      const transparent = invert ? !inRegion : inRegion;
+      const o = rowStart + 1 + x * 4;
+      raw[o] = 0;
+      raw[o + 1] = 0;
+      raw[o + 2] = 0;
+      raw[o + 3] = transparent ? 0 : 255;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // color type: RGBA
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  return Buffer.concat([
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+async function makeCowartMask(args = {}) {
+  const { snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const { selection } = await readSelectionState(args);
+
+  const targetShapeId = nonEmptyString(args.targetShapeId) || nonEmptyString(args.shapeId) || firstSelectedShapeId(selection);
+  if (!targetShapeId) throw new Error("targetShapeId is required (or select the image to edit).");
+  let targetShape = getRecord(store, targetShapeId, "target shape");
+  const pageId = findPageIdForShape(store, targetShape.id);
+  if (!pageId) throw new Error(`Could not determine the page for ${targetShapeId}.`);
+
+  if (targetShape.type === "frame") {
+    const child = getPageShapes(store, pageId).find((shape) => shape.parentId === targetShape.id && shape.type === "image");
+    if (!child) throw new Error(`Frame ${targetShapeId} has no image to edit.`);
+    targetShape = child;
+  }
+  if (targetShape.type !== "image") throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image.`);
+
+  const asset = store[targetShape.props?.assetId];
+  const naturalW = Math.round(finiteNumber(asset?.props?.w, finiteNumber(targetShape.props?.w, 0)));
+  const naturalH = Math.round(finiteNumber(asset?.props?.h, finiteNumber(targetShape.props?.h, 0)));
+  if (!(naturalW > 0 && naturalH > 0)) throw new Error("Could not determine the image's pixel size.");
+  const imgBounds = pageBoundsForShape(store, targetShape);
+  if (!imgBounds || imgBounds.w <= 0 || imgBounds.h <= 0) throw new Error("Could not determine the image's page bounds.");
+
+  // Resolve the edit region in page coordinates.
+  let regionPage;
+  if (args.region && typeof args.region === "object") {
+    regionPage = {
+      x: finiteNumber(args.region.x, imgBounds.x),
+      y: finiteNumber(args.region.y, imgBounds.y),
+      w: finiteNumber(args.region.w, imgBounds.w),
+      h: finiteNumber(args.region.h, imgBounds.h),
+    };
+  } else if (nonEmptyString(args.regionShapeId)) {
+    regionPage = pageBoundsForShape(store, getRecord(store, nonEmptyString(args.regionShapeId), "region shape"));
+    if (!regionPage) throw new Error("Could not determine bounds for regionShapeId.");
+  } else {
+    throw new Error("Provide region {x,y,w,h} in page coords, or regionShapeId.");
+  }
+
+  const padding = Math.max(0, finiteNumber(args.padding, 0));
+  regionPage = { x: regionPage.x - padding, y: regionPage.y - padding, w: regionPage.w + 2 * padding, h: regionPage.h + 2 * padding };
+
+  // Map page coords -> image pixel space (the tricky part).
+  const sx = naturalW / imgBounds.w;
+  const sy = naturalH / imgBounds.h;
+  const px = Math.round((regionPage.x - imgBounds.x) * sx);
+  const py = Math.round((regionPage.y - imgBounds.y) * sy);
+  const pw = Math.round(regionPage.w * sx);
+  const ph = Math.round(regionPage.h * sy);
+  const x0 = Math.max(0, Math.min(px, naturalW));
+  const y0 = Math.max(0, Math.min(py, naturalH));
+  const pixelRegion = {
+    x: x0,
+    y: y0,
+    w: Math.max(0, Math.min(px + pw, naturalW) - x0),
+    h: Math.max(0, Math.min(py + ph, naturalH) - y0),
+  };
+  if (pixelRegion.w <= 0 || pixelRegion.h <= 0) throw new Error("The region does not overlap the image.");
+
+  const maskBuffer = encodeMaskPng(naturalW, naturalH, pixelRegion, { invert: args.invert === true });
+  const canvasDir = resolveCanvasDir(args);
+  const sourceImageFile = localAssetFileForShape(store, targetShape, canvasDir);
+  const outDir = nonEmptyString(args.outputDir) ? pathResolve(args.outputDir) : join(canvasDir, "masks");
+  const maskFile = join(outDir, nonEmptyString(args.maskFileName) || `cowart-mask-${exportTimestamp()}.png`);
+  if (!args.dryRun) {
+    await mkdir(outDir, { recursive: true });
+    await writeFile(maskFile, maskBuffer);
+  }
+
+  const result = {
+    targetShapeId: targetShape.id,
+    pageId,
+    naturalSize: { width: naturalW, height: naturalH },
+    imageBounds: imgBounds,
+    pixelRegion,
+    invert: args.invert === true,
+    maskFile,
+    sourceImageFile,
+    dryRun: Boolean(args.dryRun),
+  };
+  if (args.returnBase64 === true) {
+    result.maskBase64 = maskBuffer.toString("base64");
+    if (sourceImageFile) {
+      try {
+        result.sourceImageBase64 = (await readFile(sourceImageFile)).toString("base64");
+      } catch {
+        result.sourceImageBase64 = null;
+      }
+    }
+  }
+  return result;
+}
+
 // Allowed tldraw 5 style/enum values, used to sanitize agent-supplied props so a
 // stray value cannot produce a record the browser's store would reject.
 const SHAPE_STYLE_VALUES = {
@@ -1627,6 +1785,32 @@ function toolDefinitions() {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
+    {
+      name: TOOL_MAKE_MASK,
+      title: "Make Cowart Edit Mask",
+      description:
+        "Build an inpainting mask for a Cowart image so only a marked region is regenerated and the rest is preserved. Maps an edit region (page coords, or another shape's bounds, e.g. an annotation target) into the image's pixel space and writes a PNG mask (transparent = edit, opaque = keep). Pass the source image + mask to image generation, then write the result back with replace_cowart_image.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          targetShapeId: { type: "string", description: "Image shape to edit (or a frame holder's image). Falls back to the current selection." },
+          shapeId: { type: "string", description: "Alias for targetShapeId." },
+          region: { type: "object", description: "Edit region in page coords { x, y, w, h } (e.g. a box around an annotation target from get_cowart_annotations)." },
+          regionShapeId: { type: "string", description: "Use another shape's page bounds as the edit region (e.g. a rectangle drawn over the area)." },
+          padding: { type: "number", description: "Expand the region by this many page units. Defaults to 0." },
+          invert: { type: "boolean", description: "Flip mask polarity (make the region opaque/kept and the rest transparent/edited). Defaults to false." },
+          outputDir: { type: "string", description: "Directory for the mask PNG. Defaults to <canvasDir>/masks." },
+          maskFileName: { type: "string", description: "Mask file name. Defaults to cowart-mask-<timestamp>.png." },
+          returnBase64: { type: "boolean", description: "Also return maskBase64 and sourceImageBase64, to feed image generation directly. Defaults to false." },
+          dryRun: { type: "boolean", description: "Compute the pixel region and plan without writing the mask file." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
   ];
 }
 
@@ -1749,6 +1933,20 @@ async function handleToolCall(id, params) {
     return;
   }
 
+  if (params?.name === TOOL_MAKE_MASK) {
+    const result = await makeCowartMask(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned" : "Built"} edit mask for ${result.targetShapeId} (${result.naturalSize.width}x${result.naturalSize.height}), region px (${result.pixelRegion.x},${result.pixelRegion.y},${result.pixelRegion.w}x${result.pixelRegion.h}) -> ${result.maskFile}`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
 }
 
@@ -1764,7 +1962,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes for diagrams and labels).",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area.",
     });
     return;
   }

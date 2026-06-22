@@ -97,7 +97,14 @@ end→toId，`normalizedAnchor` 默认 {0.5,0.5}、`snap:"edge"`）。或单独�
 
 ---
 
-## 5c. 区域感知编辑（蒙版 / inpainting）— 最大产品价值，中高风险
+## 5c. 区域感知编辑（蒙版 / inpainting）— ✅ 已落地
+
+> 实现：新增 MCP 工具 `make_cowart_mask` —— 把编辑区域（`region` 页面坐标 / `regionShapeId`）
+> 映射到图片**像素空间**，用 Node `zlib` **无头**编码 RGBA 蒙版 PNG（透明=改、不透明=留），
+> 返回原图 + 蒙版（可 base64 直供 image_gen）。比方案里的「浏览器 canvas 画蒙版」更简单、
+> 完全无头可验。skill `cowart-image-edit` 增加「区域蒙版编辑」路径：mask → image_gen(mask) →
+> replace（就地）或 insert（放旁边）。验证：14 项 —— **解码生成的 PNG 逐像素校验**边界 alpha、
+> 2× 页面→像素映射、regionShapeId、invert、padding、不重叠/缺区域报错。
 
 **目标**：标注改图从「整图重生成」升级为「只改标注区域、其余像素保留」。
 
@@ -165,7 +172,7 @@ ShapeUtil** 才能加载含该记录的画布。需：
 0. **5.0 base64 直收** ✅（前置、最小、无头；给 5b/5c/5d 铺路）
 1. **5a 箭头绑定** ✅（无头、低险、是 5d 血缘连接的基础）
 2. **5b 草图→图** ✅（复用 export+insert+5.0，最少新代码）
-3. **5c 区域蒙版编辑**（最大价值；复用 annotations+export 通道+replace+5.0）
+3. **5c 区域蒙版编辑** ✅（最大价值；复用 annotations+replace+5.0；蒙版无头 zlib 编码）
 4. **5d 活的 holder + 血缘**（最高风险；复用 5a 绑定；拆两步）
 
 横切原则不变：加法不破坏、写操作走合并端点、镜像 UI 记录、能无头就无头验证、

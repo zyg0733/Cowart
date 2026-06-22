@@ -176,6 +176,28 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    - the new revised image appears beside the original
    - the new image does not include annotation arrows, labels, selections, or UI chrome
 
+## Region-only edits (masked / inpainting)
+
+When the change is confined to a marked area and the rest of the image must stay
+pixel-identical, prefer a masked edit over regenerating the whole image:
+
+1. Determine the edit region. Use `get_cowart_annotations` to get the annotation
+   target and arrow tip, or have the user draw a rectangle over the area.
+2. Build a mask with the Cowart MCP `make_cowart_mask` tool: pass the target image
+   shape plus the region as `region` (page coords `{x,y,w,h}`, e.g. a box around the
+   annotation tip) or `regionShapeId` (a rectangle marking the area), with
+   `returnBase64: true`. It returns the source image + a PNG mask in the image's pixel
+   space (transparent = edit, opaque = keep).
+3. Call `image_gen` with the source image, the mask, and a prompt describing only the
+   change. The model edits inside the transparent area and preserves the rest.
+4. Write the result back:
+   - to revise in place (only when the user wants to edit the original), use
+     `replace_cowart_image` with the result `imageBase64` and the target shape id;
+   - otherwise place the edited copy beside the original with `insert_cowart_image`.
+
+Use `padding` to give the model a little context around the region. `invert: true`
+flips polarity if the model you call treats opaque as the editable area.
+
 ## Guardrails
 
 - Never replace the original image unless the user explicitly asks for replacement.

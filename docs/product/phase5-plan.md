@@ -68,7 +68,13 @@ end→toId，`normalizedAnchor` 默认 {0.5,0.5}、`snap:"edge"`）。或单独�
 
 ---
 
-## 5b. 草图 → 图（sketch → image）— 复用最多，低风险
+## 5b. 草图 → 图（sketch → image）— ✅ 已落地
+
+> 实现：新增 skill `cowart-sketch-to-image`（编排：选中草图 → `export_cowart_view`
+> 导出参考图 → image_gen 以草图为 input_image/结构参考 → `insert_cowart_image`
+> 经 base64 直收放旁边）。底层只加了 `export_cowart_view` 的 `returnBase64`（导出即拿
+> 字节，免文件）。验证：asset/render 两路 returnBase64 各测通过、默认不返回（防膨胀）、
+> 选区 shapeIds 正确转发浏览器；模型调用为委派。
 
 **目标**：用户用 draw/几何画草图 → agent 用其作为结构参考生成精修图。
 
@@ -158,7 +164,7 @@ ShapeUtil** 才能加载含该记录的画布。需：
 
 0. **5.0 base64 直收** ✅（前置、最小、无头；给 5b/5c/5d 铺路）
 1. **5a 箭头绑定** ✅（无头、低险、是 5d 血缘连接的基础）
-2. **5b 草图→图**（复用 export+insert+5.0，最少新代码）
+2. **5b 草图→图** ✅（复用 export+insert+5.0，最少新代码）
 3. **5c 区域蒙版编辑**（最大价值；复用 annotations+export 通道+replace+5.0）
 4. **5d 活的 holder + 血缘**（最高风险；复用 5a 绑定；拆两步）
 

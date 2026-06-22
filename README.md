@@ -131,6 +131,7 @@ Codex 会读取截图里的标注和箭头，生成去掉标注痕迹的新图�
 - `cowart:cowart-open-canvas`：打开 Cowart 本地画布。
 - `cowart:cowart-image-gen`：把生成图片插入选中的 AI image holder。
 - `cowart:cowart-image-edit`：根据用户提供的 Cowart 标注截图生成修订图。
+- `cowart:cowart-sketch-to-image`：把画布上的草图作为结构参考生成成品图，并放在草图旁。
 
 ## 本地开发
 

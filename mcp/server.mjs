@@ -1093,10 +1093,17 @@ async function exportCowartView(args = {}) {
 
   await mkdir(dirname(outputPath), { recursive: true });
 
+  const wantBase64 = args.returnBase64 === true;
+
   if (strategy === "asset") {
     await copyFile(assetSourceFile, outputPath);
     const bytes = (await stat(outputPath)).size;
-    return { cowartUrl, strategy: "asset", outputPath, sourceFile: assetSourceFile, bytes, dryRun: false };
+    const result = { cowartUrl, strategy: "asset", outputPath, sourceFile: assetSourceFile, bytes, dryRun: false };
+    if (wantBase64) {
+      result.base64 = (await readFile(assetSourceFile)).toString("base64");
+      result.mimeType = mimeTypeForFile(assetSourceFile);
+    }
+    return result;
   }
 
   // Render path: the MCP cannot rasterize tldraw, so a connected browser does it.
@@ -1117,7 +1124,7 @@ async function exportCowartView(args = {}) {
   if (!render?.base64) throw new Error("The Cowart browser returned no image data for the export.");
   const buffer = Buffer.from(render.base64, "base64");
   await writeFile(outputPath, buffer);
-  return {
+  const result = {
     cowartUrl,
     strategy: "render",
     outputPath,
@@ -1127,6 +1134,11 @@ async function exportCowartView(args = {}) {
     bytes: buffer.length,
     dryRun: false,
   };
+  if (wantBase64) {
+    result.base64 = render.base64;
+    result.mimeType = mimeTypeForFile(outputPath);
+  }
+  return result;
 }
 
 // Allowed tldraw 5 style/enum values, used to sanitize agent-supplied props so a
@@ -1567,6 +1579,7 @@ function toolDefinitions() {
           scale: { type: "number", description: "Render scale factor (render strategy only)." },
           padding: { type: "number", description: "Render padding in canvas units (render strategy only)." },
           background: { type: "boolean", description: "Include the page background in the render (render strategy only)." },
+          returnBase64: { type: "boolean", description: "Also return the exported image as base64 (+mimeType), e.g. to feed a sketch straight into image generation as a reference. Defaults to false." },
           dryRun: { type: "boolean", description: "Resolve the plan (strategy + output path) without writing or rendering." },
         },
         additionalProperties: false,

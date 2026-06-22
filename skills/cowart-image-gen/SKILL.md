@@ -67,10 +67,13 @@ via `insert_cowart_image` `fillAnchor`). Support all of them.
 
    Holder workflow: use the selected holder's `props.w` and `props.h` as the size contract. The generated image should match the holder aspect ratio as closely as possible.
 
-   If the holder `type` is `cowart-ai-image` (the current holder), fill it with
-   `replace_cowart_image` (pass the holder id + the generated `imageBase64`). The
-   holder keeps its position and size and renders the image itself; do not create a
-   separate image shape.
+   If the holder `type` is `cowart-ai-image` (the current holder): before you start
+   generating, mark it busy with `update_cowart_holder` `status: "generating"` (the
+   holder shows a spinner the user sees via live refresh). Read its `props.prompt`
+   (the user may have typed it directly on the holder) and use it. Then fill it with
+   `replace_cowart_image` (pass the holder id + the generated `imageBase64`) — this
+   sets the holder's own image and marks it `filled`; do not create a separate image
+   shape. (`update_cowart_holder` can also set/clear the holder prompt.)
 
    If the holder `type` is `frame` (legacy), insert the generated image as a child of the frame:
 

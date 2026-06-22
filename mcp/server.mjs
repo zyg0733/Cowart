@@ -15,6 +15,8 @@ const TOOL_REPLACE_IMAGE = "replace_cowart_image";
 const TOOL_EXPORT_VIEW = "export_cowart_view";
 const TOOL_ADD_SHAPES = "add_cowart_shapes";
 const TOOL_MAKE_MASK = "make_cowart_mask";
+const TOOL_UPDATE_HOLDER = "update_cowart_holder";
+const AI_IMAGE_HOLDER_STATUSES = ["empty", "requested", "generating", "filled"];
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
 const AI_IMAGE_HOLDER_DEFAULT_H = 220;
@@ -1618,6 +1620,41 @@ async function addCowartShapes(args = {}) {
   };
 }
 
+async function updateCowartHolder(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const { selection } = await readSelectionState(args);
+
+  const holderId =
+    nonEmptyString(args.holderId) || nonEmptyString(args.targetShapeId) || nonEmptyString(args.shapeId) || firstSelectedShapeId(selection);
+  if (!holderId) throw new Error("holderId is required (or select a holder).");
+  const holder = getRecord(store, holderId, "holder");
+  if (holder.type !== COWART_AI_IMAGE_SHAPE) {
+    throw new Error(`Shape ${holderId} is type "${holder.type}", not a cowart-ai-image holder.`);
+  }
+
+  const props = { ...holder.props };
+  let changed = false;
+  if (nonEmptyString(args.status)) {
+    if (!AI_IMAGE_HOLDER_STATUSES.includes(args.status)) {
+      throw new Error(`Invalid status "${args.status}". Use one of: ${AI_IMAGE_HOLDER_STATUSES.join(", ")}.`);
+    }
+    props.status = args.status;
+    changed = true;
+  }
+  if (typeof args.prompt === "string") {
+    props.prompt = args.prompt;
+    changed = true;
+  }
+  if (!changed) throw new Error("Provide status and/or prompt to update.");
+
+  const updated = { ...holder, props };
+  if (!args.dryRun) {
+    await persistRecords(cowartUrl, store, snapshot, { put: [updated] });
+  }
+  return { cowartUrl, holderId, status: props.status, prompt: props.prompt, dryRun: Boolean(args.dryRun) };
+}
+
 function toolDefinitions() {
   return [
     {
@@ -1880,6 +1917,28 @@ function toolDefinitions() {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
+    {
+      name: TOOL_UPDATE_HOLDER,
+      title: "Update Cowart Image Holder",
+      description:
+        "Update a cowart-ai-image holder's status and/or prompt without changing its image. Set status to 'generating' before you start generating (the holder shows a spinner the user sees via live refresh), then fill it with replace_cowart_image (which marks it 'filled'). Also use to set/clear the holder's prompt.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          holderId: { type: "string", description: "The cowart-ai-image holder shape id. Falls back to targetShapeId/shapeId or the current selection." },
+          targetShapeId: { type: "string", description: "Alias for holderId." },
+          shapeId: { type: "string", description: "Alias for holderId." },
+          status: { type: "string", enum: ["empty", "requested", "generating", "filled"], description: "New holder status." },
+          prompt: { type: "string", description: "New prompt text shown on the holder (empty string clears it)." },
+          dryRun: { type: "boolean", description: "Resolve the update without saving." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
   ];
 }
 
@@ -2002,6 +2061,20 @@ async function handleToolCall(id, params) {
     return;
   }
 
+  if (params?.name === TOOL_UPDATE_HOLDER) {
+    const result = await updateCowartHolder(params.arguments ?? {});
+    sendResult(id, {
+      content: [
+        {
+          type: "text",
+          text: `${result.dryRun ? "Planned update for" : "Updated"} holder ${result.holderId}: status=${result.status}${result.prompt ? `, prompt="${result.prompt}"` : ""}.`,
+        },
+      ],
+      structuredContent: result,
+    });
+    return;
+  }
+
   if (params?.name === TOOL_MAKE_MASK) {
     const result = await makeCowartMask(params.arguments ?? {});
     sendResult(id, {
@@ -2031,7 +2104,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area.",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area. Holder status: update_cowart_holder sets a cowart-ai-image holder's status (e.g. 'generating' before you start) or prompt.",
     });
     return;
   }

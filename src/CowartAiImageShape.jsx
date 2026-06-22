@@ -17,8 +17,8 @@ const AI_IMAGE_STATUSES = ['empty', 'requested', 'generating', 'filled']
 
 const IS_ZH = typeof navigator !== 'undefined' && (navigator.language || '').toLowerCase().startsWith('zh')
 const COPY = IS_ZH
-  ? { empty: 'AI 图片占位框', requested: '已请求生成', generating: '生成中…', generate: '生成', regenerate: '重生成', hint: '让 Codex 把图片生成到这里' }
-  : { empty: 'AI image holder', requested: 'Generation requested', generating: 'Generating…', generate: 'Generate', regenerate: 'Regenerate', hint: 'Ask Codex to generate an image here' }
+  ? { empty: 'AI 图片占位框', requested: '已请求生成', generating: '生成中…', generate: '生成', regenerate: '重生成', hint: '让 Codex 把图片生成到这里', edit: '编辑 prompt', promptPlaceholder: '描述要生成的图片…' }
+  : { empty: 'AI image holder', requested: 'Generation requested', generating: 'Generating…', generate: 'Generate', regenerate: 'Regenerate', hint: 'Ask Codex to generate an image here', edit: 'Edit prompt', promptPlaceholder: 'Describe the image to generate…' }
 
 // A first-class "AI image holder" shape: it knows it is an AI slot, renders
 // empty / requested / generating / filled states, owns its image via assetId,
@@ -48,7 +48,7 @@ export class CowartAiImageShapeUtil extends ShapeUtil {
   }
 
   canEdit() {
-    return false
+    return true
   }
 
   canResize() {
@@ -96,6 +96,7 @@ function CowartAiImageComponent({ shape }) {
     },
     [editor, assetId]
   )
+  const isEditing = useValue('cowart-ai-image-editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
 
   const isFilled = status === 'filled' && src
   const requestGeneration = (event) => {
@@ -103,10 +104,14 @@ function CowartAiImageComponent({ shape }) {
     editor.markHistoryStoppingPoint('cowart-ai-image-request')
     editor.updateShape({ id: shape.id, type: COWART_AI_IMAGE_SHAPE, props: { status: 'requested' } })
   }
+  const startEditing = (event) => {
+    stopEventPropagation(event)
+    editor.setEditingShape(shape.id)
+  }
 
   return (
     <HTMLContainer
-      className={`cowart-ai-image cowart-ai-image--${isFilled ? 'filled' : status}`}
+      className={`cowart-ai-image cowart-ai-image--${isFilled ? 'filled' : status}${isEditing ? ' cowart-ai-image--editing' : ''}`}
       style={{ width: w, height: h }}
     >
       {isFilled ? (
@@ -124,16 +129,45 @@ function CowartAiImageComponent({ shape }) {
         </div>
       )}
 
-      {status !== 'generating' ? (
-        <button
-          type="button"
-          className="cowart-ai-image__btn"
+      {isEditing ? (
+        <textarea
+          className="cowart-ai-image__editor"
+          autoFocus
+          defaultValue={prompt}
+          placeholder={COPY.promptPlaceholder}
           onPointerDown={stopEventPropagation}
-          onClick={requestGeneration}
-          title={isFilled ? COPY.regenerate : COPY.generate}
-        >
-          {isFilled ? COPY.regenerate : COPY.generate}
-        </button>
+          onKeyDown={(event) => {
+            event.stopPropagation()
+            if (event.key === 'Escape') editor.setEditingShape(null)
+          }}
+          onChange={(event) =>
+            editor.updateShape({ id: shape.id, type: COWART_AI_IMAGE_SHAPE, props: { prompt: event.target.value } })
+          }
+          onBlur={() => editor.setEditingShape(null)}
+        />
+      ) : null}
+
+      {status !== 'generating' && !isEditing ? (
+        <div className="cowart-ai-image__actions">
+          <button
+            type="button"
+            className="cowart-ai-image__btn cowart-ai-image__btn--ghost"
+            onPointerDown={stopEventPropagation}
+            onClick={startEditing}
+            title={COPY.edit}
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            className="cowart-ai-image__btn"
+            onPointerDown={stopEventPropagation}
+            onClick={requestGeneration}
+            title={isFilled ? COPY.regenerate : COPY.generate}
+          >
+            {isFilled ? COPY.regenerate : COPY.generate}
+          </button>
+        </div>
       ) : null}
 
       {status === 'requested' ? <span className="cowart-ai-image__badge" aria-hidden="true" /> : null}

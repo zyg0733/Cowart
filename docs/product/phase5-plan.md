@@ -160,6 +160,11 @@ replace 已测。模型蒙版输出为委派；端到端需浏览器 + 真实模
 > base64 填充后渲染 `<img>`；按钮置 `requested`；**修复了一处 tldraw 5 必需的
 > `getIndicatorPath`（缺失会在选中/悬停时崩溃）**；保存→重载 + `selectAll` 不崩、状态持久。
 
+**打磨（已落地）**：holder 的 prompt **可在画布上直接编辑**（双击 / ✎ → 文本框 →
+`onChange` 写回 `props.prompt`，已浏览器实测持久化）；新增 MCP `update_cowart_holder`
+让 agent 开工前置 `status:"generating"`（用户经实时刷新看到转圈），生成完再用
+`replace_cowart_image` 填充。skill `cowart-image-gen` 已纳入该流程。
+
 **（原始目标，已达成）**：holder 从「带 meta 的 frame」升级为自定义形状，显示
 空/生成中/已填 状态、prompt、重生成入口；图片版本形成可追溯血缘。
 

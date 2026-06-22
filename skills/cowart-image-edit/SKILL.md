@@ -100,6 +100,10 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    - If the source image is inside an `AI 图片` frame, use the frame's page-level bounds as the anchor and place the new image as a sibling of that frame.
    - Otherwise use the source image's own bounds and parent.
    - When the annotated source appears to have earlier revision images nearby, prefer placing the new revised image to the right of the currently annotated/source image, because older annotation outputs may already live on the left.
+   - To keep an auditable trail, pass `lineageOf` (the source image shape id) plus
+     `prompt` and `version` to `insert_cowart_image`. It records lineage metadata and
+     draws a dotted connector from the previous version to the new one, so the
+     original → v2 → v3 progression is visible and tracks moves.
    - Place the new image to the right of the anchor with a margin of about `40` canvas units.
    - Match the displayed width and height of the anchor unless the user asks for a different size.
    - If that position would overlap existing content, keep moving right by `anchor width + 40` until the new image is clear.

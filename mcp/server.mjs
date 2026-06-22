@@ -618,6 +618,22 @@ async function insertCowartImage(args = {}) {
     shapeMeta.cowartAnnotationScreenshot = nonEmptyString(args.annotationScreenshot);
   }
 
+  // Lineage: mark this image as a revision of a previous one, for an auditable
+  // original -> v2 -> v3 trail.
+  const lineageParentId = nonEmptyString(args.lineageOf);
+  const lineageParent = lineageParentId ? store[lineageParentId] : null;
+  if (lineageParentId && (!lineageParent || lineageParent.typeName !== "shape")) {
+    throw new Error(`lineageOf is not a shape: ${lineageParentId}`);
+  }
+  if (lineageParent) {
+    shapeMeta.cowartLineage = {
+      parentShapeId: lineageParentId,
+      prompt: nonEmptyString(args.prompt) ?? null,
+      version: finiteNumber(args.version, null),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
   const shapeRecord = {
     x: bounds.x,
     y: bounds.y,
@@ -643,19 +659,57 @@ async function insertCowartImage(args = {}) {
     typeName: "shape",
   };
 
+  // A subtle dotted connector from the previous version to this one (bound at
+  // both ends so it tracks moves). Skipped for holder fills (local coords).
+  const lineageRecords = [];
+  let lineageConnectorId = null;
+  if (lineageParent && args.lineageConnector !== false && !fillAnchor) {
+    const parentBounds = pageBoundsForShape(store, lineageParent);
+    if (parentBounds) {
+      const parentCenter = { x: parentBounds.x + parentBounds.w / 2, y: parentBounds.y + parentBounds.h / 2 };
+      const newCenter = { x: posX + width / 2, y: posY + height / 2 };
+      lineageConnectorId = uniqueRecordId(store, "shape", "lineage");
+      store[lineageConnectorId] = { id: lineageConnectorId, typeName: "shape" }; // reserve id
+      lineageRecords.push({
+        id: lineageConnectorId,
+        typeName: "shape",
+        type: "arrow",
+        x: parentCenter.x,
+        y: parentCenter.y,
+        rotation: 0,
+        index: chooseIndex(store, pageId),
+        parentId: pageId,
+        isLocked: false,
+        opacity: 1,
+        meta: { cowartLineageConnector: true },
+        props: SHAPE_BUILDERS.arrow({
+          start: { x: 0, y: 0 },
+          end: { x: newCenter.x - parentCenter.x, y: newCenter.y - parentCenter.y },
+          color: "grey",
+          dash: "dotted",
+          size: "s",
+          arrowheadEnd: "arrow",
+        }),
+      });
+      lineageRecords.push(makeArrowBinding(store, lineageConnectorId, lineageParentId, "start"));
+      lineageRecords.push(makeArrowBinding(store, lineageConnectorId, shapeId, "end"));
+    }
+  }
+
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
     await writeResolvedImage(source, filePath);
     try {
       // Merge just the new records into the server's current snapshot so a
       // concurrent browser save is not overwritten by our stale read.
-      await mergeCanvasRecords(cowartUrl, { put: [assetRecord, shapeRecord] });
+      await mergeCanvasRecords(cowartUrl, { put: [assetRecord, shapeRecord, ...lineageRecords] });
     } catch (mergeError) {
       // Older Cowart servers lack the merge endpoint: fall back to a full
       // snapshot save (reintroduces the read-modify-write window).
       try {
         store[assetId] = assetRecord;
         store[shapeId] = shapeRecord;
+        for (const record of lineageRecords) store[record.id] = record;
         await saveCanvasSnapshot(cowartUrl, snapshot);
       } catch {
         throw mergeError;
@@ -677,6 +731,9 @@ async function insertCowartImage(args = {}) {
     imageSize: naturalSize,
     fillAnchor,
     bounds,
+    lineage: lineageParent
+      ? { parentShapeId: lineageParentId, connectorId: lineageConnectorId, version: shapeMeta.cowartLineage.version, prompt: shapeMeta.cowartLineage.prompt }
+      : null,
     dryRun: Boolean(args.dryRun),
   };
 }
@@ -1612,6 +1669,10 @@ function toolDefinitions() {
           displayWidth: { type: "number", description: "Displayed shape width in canvas units." },
           displayHeight: { type: "number", description: "Displayed shape height in canvas units." },
           altText: { type: "string", description: "Image shape alt text." },
+          lineageOf: { type: "string", description: "Mark this image as a revision of a previous image shape: records lineage metadata and (unless lineageConnector is false) draws a bound connector from that image to this one." },
+          prompt: { type: "string", description: "Generation prompt to record in the lineage metadata (with lineageOf)." },
+          version: { type: "number", description: "Revision number to record in the lineage metadata (with lineageOf)." },
+          lineageConnector: { type: "boolean", description: "Draw the dotted connector arrow from the previous version to this one. Defaults to true when lineageOf is set." },
           annotationScreenshot: { type: "string", description: "Source annotation screenshot filename for metadata." },
           shapeMeta: { type: "object", description: "Additional tldraw shape metadata." },
           assetMeta: { type: "object", description: "Additional tldraw asset metadata." },

@@ -137,9 +137,24 @@ replace 已测。模型蒙版输出为委派；端到端需浏览器 + 真实模
 
 ---
 
-## 5d. 活的 holder + 迭代血缘（custom ShapeUtil）— 最高价值密度，最高风险，最后做
+## 5d. 迭代血缘 ✅ 已落地 ／ 活的 holder（custom ShapeUtil）— 已重新定范围，下放
 
-**目标**：holder 从「带 meta 的 frame」升级为**自定义形状**，显示
+> **落地的是「迭代血缘」**：`insert_cowart_image` 新增 `lineageOf` + `prompt` + `version`：
+> 记录 `meta.cowartLineage`，并（默认）画一条**绑定的虚线连接箭头**（复用 5a）从上一版
+> 指向新版 → original→v2→v3 可追溯、随移动跟随。skill `cowart-image-edit` 在「放旁边」
+> 时建议带上 `lineageOf`。验证：无头 10 项 —— 连接箭头与 binding 过真实 schema 校验、
+> lineage meta、几何（origin 在上一版中心）、`lineageConnector:false` 仅记 meta、缺节点报错。
+>
+> **「活的 holder」（自定义 ShapeUtil）经评估后下放/暂缓**，理由：
+> 1. 引入新 shape 类型是**一次性门**——所有客户端必须注册该 util 才能加载含该记录的画布，
+>    且要迁移存量 frame-holder，破坏「加法不破坏」与加载稳定性；
+> 2. 其招牌「重生成按钮」依赖一个持续运行的 agent 循环来服务，而 Codex 是请求/响应模型，
+>    按钮只能写个意图等用户再次发起——价值打折；
+> 3. 仅能浏览器验证。
+> 「生成中」状态等可先用现有 frame 的 name/meta 低风险表达；真正的自定义形状留作独立
+> 跟进（隔离分支）再评估。
+
+**（原方案，保留供参考）目标**：holder 从「带 meta 的 frame」升级为**自定义形状**，显示
 空/生成中/已填 状态、prompt 标签、重生成入口；图片版本形成可追溯血缘。
 
 **数据模型**：自定义 `ShapeUtil` `cowart-ai-image`，props
@@ -173,7 +188,7 @@ ShapeUtil** 才能加载含该记录的画布。需：
 1. **5a 箭头绑定** ✅（无头、低险、是 5d 血缘连接的基础）
 2. **5b 草图→图** ✅（复用 export+insert+5.0，最少新代码）
 3. **5c 区域蒙版编辑** ✅（最大价值；复用 annotations+replace+5.0；蒙版无头 zlib 编码）
-4. **5d 活的 holder + 血缘**（最高风险；复用 5a 绑定；拆两步）
+4. **5d 迭代血缘** ✅（复用 5a 绑定）；活的 holder 自定义形状已下放（理由见 5d 节）
 
 横切原则不变：加法不破坏、写操作走合并端点、镜像 UI 记录、能无头就无头验证、
 必须浏览器的（5c 蒙版渲染、5d 自定义形状）用 Claude Preview 截图 + DOM 断言验证、

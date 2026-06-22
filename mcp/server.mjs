@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import readline from "node:readline";
 import zlib from "node:zlib";
@@ -557,7 +557,7 @@ async function insertCowartImage(args = {}) {
   }
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new Error(
-      `Could not determine display size for ${sourceImagePath}. Provide displayWidth and displayHeight, anchor to an existing shape, or use a PNG/JPEG/WebP source.`
+      `Could not determine display size for ${source.sourcePath ?? "the image"}. Provide displayWidth and displayHeight, anchor to an existing shape, or use a PNG/JPEG/WebP source.`
     );
   }
   const naturalSize = imageSize ?? { width: Math.round(width), height: Math.round(height) };
@@ -820,19 +820,31 @@ function nearestGenSize(w, h) {
 
 function describeShape(store, shape) {
   const isHolder = shape.meta?.cowartAiImageHolder === true;
-  return {
+  const bounds = pageBoundsForShape(store, shape);
+  const descriptor = {
     id: shape.id,
     type: shape.type,
     parentId: shape.parentId,
-    bounds: pageBoundsForShape(store, shape),
+    bounds,
     rotation: finiteNumber(shape.rotation, 0),
     text: shapeTextContent(shape),
     isAiImageHolder: isHolder,
     isAnnotation: isAnnotationArrow(shape),
     asset: assetSummary(store, shape),
-    suggestedGenSize: nearestGenSize(shape.props?.w ?? pageBoundsForShape(store, shape)?.w, shape.props?.h ?? pageBoundsForShape(store, shape)?.h),
+    suggestedGenSize: nearestGenSize(shape.props?.w ?? bounds?.w, shape.props?.h ?? bounds?.h),
     meta: shape.meta ?? {},
   };
+  // The custom cowart-ai-image holder carries its request state in props
+  // (status: empty/requested/generating/filled, and the user's prompt). Surface
+  // it here so the agent can find 'requested' holders and read the prompt from
+  // get_cowart_canvas — not only from get_cowart_selection when one is selected.
+  if (shape.type === COWART_AI_IMAGE_SHAPE) {
+    descriptor.holder = {
+      status: nonEmptyString(shape.props?.status) ?? null,
+      prompt: typeof shape.props?.prompt === "string" ? shape.props.prompt : null,
+    };
+  }
+  return descriptor;
 }
 
 // The shape an annotation arrow points at: prefer the smallest shape whose
@@ -1070,6 +1082,9 @@ async function replaceCowartImage(args = {}) {
 
   const removeOldAsset =
     oldAssetId && args.keepOldAsset !== true && !assetReferencedByOthers(store, oldAssetId, targetShape.id);
+  // The old asset's on-disk file (page-local). targetShape still points at the
+  // old assetId here, so this resolves the previous bitmap, not the new one.
+  const oldAssetFile = removeOldAsset ? localAssetFileForShape(store, targetShape, canvasDir) : null;
 
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
@@ -1078,6 +1093,11 @@ async function replaceCowartImage(args = {}) {
       put: [assetRecord, updatedShape],
       remove: removeOldAsset ? [oldAssetId] : [],
     });
+    // Now that the record is gone and nothing else references the asset, drop
+    // the orphaned file too (best-effort; never fail the replace over cleanup).
+    if (oldAssetFile && resolve(oldAssetFile) !== resolve(filePath)) {
+      await rm(oldAssetFile, { force: true }).catch(() => {});
+    }
   }
 
   return {
@@ -1087,6 +1107,7 @@ async function replaceCowartImage(args = {}) {
     assetId,
     previousAssetId: oldAssetId ?? null,
     removedPreviousAsset: Boolean(removeOldAsset),
+    removedPreviousAssetFile: Boolean(oldAssetFile),
     assetFile: filePath,
     assetUrl: assetRecord.props.src,
     imageSize: naturalSize,
@@ -1815,7 +1836,7 @@ function toolDefinitions() {
           fillAnchor: {
             type: "boolean",
             description:
-              "Fill the anchor instead of placing beside it: for an AI 图片 frame holder the image is added as a child at 0,0 sized to the frame; for a legacy geo holder it overlays the holder's position, size, and rotation. Use for the image-gen holder workflow. Defaults to false.",
+              "Fill a LEGACY holder instead of placing beside it: for a legacy AI 图片 frame holder the image is added as a child at 0,0 sized to the frame; for a legacy geo holder it overlays the holder's position, size, and rotation. NOTE: the current cowart-ai-image holder is filled with replace_cowart_image instead (fillAnchor on it is rejected). Defaults to false.",
           },
           displayWidth: { type: "number", description: "Displayed shape width in canvas units." },
           displayHeight: { type: "number", description: "Displayed shape height in canvas units." },
@@ -1878,7 +1899,7 @@ function toolDefinitions() {
       name: TOOL_CREATE_HOLDER,
       title: "Create Cowart Image Holder",
       description:
-        "Create an AI 图片 holder (tldraw frame) on the canvas, matching the holder the UI tool creates, placed beside an anchor or in a clear page area. Use to set up a slot before generating an image into it.",
+        "Create an AI 图片 holder (a custom cowart-ai-image shape that owns its image via props.assetId and tracks props.status/props.prompt) on the canvas, matching the holder the UI tool creates, placed beside an anchor or in a clear page area. Use to set up a slot before generating an image into it; fill it later with replace_cowart_image.",
       inputSchema: {
         type: "object",
         properties: {

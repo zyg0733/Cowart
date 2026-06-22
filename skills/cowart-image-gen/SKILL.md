@@ -32,8 +32,10 @@ tool with the holder id — it sets the holder's own `assetId` and marks it `fil
 Do **not** add a child image or use `insert_cowart_image` `fillAnchor` on it.
 
 A holder may be flagged `status: "requested"` (the user clicked its 生成/重生成
-button). Read pending requests via `get_cowart_canvas` (holders with
-`status: "requested"` plus their `prompt`) and fill them.
+button). `get_cowart_canvas` returns each `cowart-ai-image` holder's request state
+under a `holder` field (`holder.status` + `holder.prompt`); look for
+`holder.status: "requested"` and fill those holders. (`get_cowart_selection` also
+exposes the full `props.status`/`props.prompt` when a holder is selected.)
 
 Older canvases may still contain legacy `frame` or `geo` rectangle holders with the
 same `meta.cowartAiImageHolder` flag — those are filled the legacy way (a child image
@@ -79,7 +81,8 @@ via `insert_cowart_image` `fillAnchor`). Support all of them.
      reference (style_match), the rest are content/composition references.
    - **Busy state**: before generating, mark it busy with `update_cowart_holder`
      `status: "generating"` (the holder shows a spinner the user sees via live refresh).
-   - Read its `props.prompt` (the user may have typed it directly on the holder).
+   - Read its prompt from `get_cowart_canvas` (`holder.prompt`), or `props.prompt`
+     via `get_cowart_selection` — the user may have typed it directly on the holder.
    - **Fill**: `replace_cowart_image` (holder id + generated `imageBase64`) sets the
      holder's own image and marks it `filled`; do not create a separate image shape.
      Pass `genParams` (prompt, references, size, model, seed) to record the call on the
@@ -133,11 +136,15 @@ via `insert_cowart_image` `fillAnchor`). Support all of them.
    page-local assets folder, builds the asset and shape, and saves through the
    running Cowart service:
 
-   - Holder workflow: pass the holder as `anchorShapeId` with `fillAnchor: true`.
-     For a `frame` holder the image is added as a child at `0,0` sized to the
-     frame; for a legacy `geo` holder it overlays the holder's position, size,
-     and rotation. The tool sets `meta.cowartGeneratedForAiImageHolder` to the
-     holder id automatically.
+   - Holder workflow — **`cowart-ai-image` holder (current)**: do **not** use
+     `insert_cowart_image`/`fillAnchor`. Fill it with `replace_cowart_image`
+     (holder id + `imageBase64`), which sets the holder's own `assetId` and marks
+     it `filled`. See step 3.
+   - Holder workflow — **legacy `frame` / `geo` holder only**: pass the holder as
+     `anchorShapeId` with `fillAnchor: true`. For a `frame` holder the image is
+     added as a child at `0,0` sized to the frame; for a legacy `geo` holder it
+     overlays the holder's position, size, and rotation. The tool sets
+     `meta.cowartGeneratedForAiImageHolder` to the holder id automatically.
    - Standalone workflow: omit `fillAnchor`. Pass a non-holder `anchorShapeId`
      (or `placement`) to place the image beside that shape, or only `pageId` to
      drop it into a clear area on the current page.

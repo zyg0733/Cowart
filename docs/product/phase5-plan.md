@@ -137,25 +137,31 @@ replace 已测。模型蒙版输出为委派；端到端需浏览器 + 真实模
 
 ---
 
-## 5d. 迭代血缘 ✅ 已落地 ／ 活的 holder（custom ShapeUtil）— 已重新定范围，下放
+## 5d. 迭代血缘 ✅ ＋ 活的 holder（custom ShapeUtil）✅ — 全部落地
 
-> **落地的是「迭代血缘」**：`insert_cowart_image` 新增 `lineageOf` + `prompt` + `version`：
-> 记录 `meta.cowartLineage`，并（默认）画一条**绑定的虚线连接箭头**（复用 5a）从上一版
-> 指向新版 → original→v2→v3 可追溯、随移动跟随。skill `cowart-image-edit` 在「放旁边」
-> 时建议带上 `lineageOf`。验证：无头 10 项 —— 连接箭头与 binding 过真实 schema 校验、
-> lineage meta、几何（origin 在上一版中心）、`lineageConnector:false` 仅记 meta、缺节点报错。
+> **迭代血缘**：`insert_cowart_image` 的 `lineageOf` + `prompt` + `version` 记录
+> `meta.cowartLineage` 并画绑定虚线连接（复用 5a）。验证：无头 10 项。
 >
-> **「活的 holder」（自定义 ShapeUtil）经评估后下放/暂缓**，理由：
-> 1. 引入新 shape 类型是**一次性门**——所有客户端必须注册该 util 才能加载含该记录的画布，
->    且要迁移存量 frame-holder，破坏「加法不破坏」与加载稳定性；
-> 2. 其招牌「重生成按钮」依赖一个持续运行的 agent 循环来服务，而 Codex 是请求/响应模型，
->    按钮只能写个意图等用户再次发起——价值打折；
-> 3. 仅能浏览器验证。
-> 「生成中」状态等可先用现有 frame 的 name/meta 低风险表达；真正的自定义形状留作独立
-> 跟进（隔离分支）再评估。
+> **活的 holder（自定义形状）**：新增 `src/CowartAiImageShape.jsx` 的 `cowart-ai-image`
+> ShapeUtil（在 `<Tldraw shapeUtils>` 注册），自带 空/已请求/生成中/已填 四态渲染、
+> prompt 展示、生成/重生成按钮（点按 → `status:"requested"`，agent 经 `get_cowart_canvas`
+> 读取并填充——契合 Codex 请求/响应模型）。holder **自身持有图片**（`props.assetId`）。
+>
+> 三个原始风险都已解决：
+> 1. **一次性门**：不迁移存量；新 holder 用自定义形状，旧 `frame`/`geo` holder 继续可用
+>    （加法不破坏）。**已浏览器实测保存→重载往返无 schema 报错、新旧 holder 共存**。
+> 2. **重生成按钮 × Codex**：按钮只写 `status:"requested"`，agent 下一轮读取处理 —— 即
+>    agent-native 的「UI 动作=可读状态」握手，契合请求/响应。
+> 3. **填充机制**：holder owns image，`create_cowart_image_holder` 建自定义形状，
+>    `replace_cowart_image` 直接 set 其 `assetId`+`status:filled`（`insert fillAnchor`
+>    对自定义 holder 给出重定向报错，避免加无效子节点）。
+>
+> 验证（Claude Preview 真实浏览器）：编辑器创建 + MCP 创建均渲染四态；MCP `replace`
+> base64 填充后渲染 `<img>`；按钮置 `requested`；**修复了一处 tldraw 5 必需的
+> `getIndicatorPath`（缺失会在选中/悬停时崩溃）**；保存→重载 + `selectAll` 不崩、状态持久。
 
-**（原方案，保留供参考）目标**：holder 从「带 meta 的 frame」升级为**自定义形状**，显示
-空/生成中/已填 状态、prompt 标签、重生成入口；图片版本形成可追溯血缘。
+**（原始目标，已达成）**：holder 从「带 meta 的 frame」升级为自定义形状，显示
+空/生成中/已填 状态、prompt、重生成入口；图片版本形成可追溯血缘。
 
 **数据模型**：自定义 `ShapeUtil` `cowart-ai-image`，props
 `{ w, h, prompt, status:"empty"|"generating"|"filled", assetId|null }`，在

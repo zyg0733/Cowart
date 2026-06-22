@@ -15,19 +15,29 @@ The Cowart service should be running for the user's active project, usually at:
 http://127.0.0.1:43217
 ```
 
-New holders are tldraw `frame` shapes with:
+New holders are a custom `cowart-ai-image` shape that **owns its image** via
+`props.assetId` and tracks `props.status` (`empty` / `requested` / `generating` /
+`filled`) and an optional `props.prompt`:
 
 ```json
 {
-  "type": "frame",
-  "meta": {
-    "cowartAiImageHolder": true
-  }
+  "type": "cowart-ai-image",
+  "props": { "status": "empty", "prompt": "", "assetId": null },
+  "meta": { "cowartAiImageHolder": true }
 }
 ```
 
-Older canvases may still contain legacy `geo` rectangle holders with the same
-meta flag. Support both shapes.
+To **fill** a `cowart-ai-image` holder, use the Cowart MCP `replace_cowart_image`
+tool with the holder id — it sets the holder's own `assetId` and marks it `filled`.
+Do **not** add a child image or use `insert_cowart_image` `fillAnchor` on it.
+
+A holder may be flagged `status: "requested"` (the user clicked its 生成/重生成
+button). Read pending requests via `get_cowart_canvas` (holders with
+`status: "requested"` plus their `prompt`) and fill them.
+
+Older canvases may still contain legacy `frame` or `geo` rectangle holders with the
+same `meta.cowartAiImageHolder` flag — those are filled the legacy way (a child image
+via `insert_cowart_image` `fillAnchor`). Support all of them.
 
 ## Workflow
 
@@ -57,7 +67,12 @@ meta flag. Support both shapes.
 
    Holder workflow: use the selected holder's `props.w` and `props.h` as the size contract. The generated image should match the holder aspect ratio as closely as possible.
 
-   If the holder `type` is `frame`, insert the generated image as a child of the frame:
+   If the holder `type` is `cowart-ai-image` (the current holder), fill it with
+   `replace_cowart_image` (pass the holder id + the generated `imageBase64`). The
+   holder keeps its position and size and renders the image itself; do not create a
+   separate image shape.
+
+   If the holder `type` is `frame` (legacy), insert the generated image as a child of the frame:
 
    - `parentId`: holder shape id
    - `x`: `0`

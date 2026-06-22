@@ -44,6 +44,13 @@ import 'tldraw/tldraw.css'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
 import { diffRemoteSnapshot, isCanvasSnapshot, storeDiffersFromBaseline } from './canvasSync.js'
+import {
+  COWART_AI_IMAGE_SHAPE,
+  CowartAiImageShapeUtil,
+  AI_IMAGE_HOLDER_LABEL,
+  AI_IMAGE_HOLDER_DEFAULT_W,
+  AI_IMAGE_HOLDER_DEFAULT_H
+} from './CowartAiImageShape.jsx'
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
@@ -52,9 +59,6 @@ const SELECTION_ENDPOINT = '/api/selection'
 const VIEW_STATE_ENDPOINT = '/api/view-state'
 const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'
 const AI_IMAGE_TOOL_ID = 'ai-image'
-const AI_IMAGE_HOLDER_LABEL = 'AI 图片'
-const AI_IMAGE_HOLDER_DEFAULT_W = 320
-const AI_IMAGE_HOLDER_DEFAULT_H = 220
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
 const ANNOTATION_TOOL_LABEL = '标注'
 const ANNOTATION_DEFAULT_COLOR = 'red'
@@ -118,12 +122,12 @@ function getAiImageHolderMeta() {
 function createAiImageHolderShape(editor, id, shapeOverrides = {}) {
   const scale = editor.getResizeScaleFactor()
   const { meta, props, ...shapeRecordOverrides } = shapeOverrides
-  const { scale: _scale, ...frameProps } = props ?? {}
+  const { scale: _scale, color: _color, ...holderProps } = props ?? {}
 
   return editor.createShape({
     ...shapeRecordOverrides,
     id,
-    type: 'frame',
+    type: COWART_AI_IMAGE_SHAPE,
     meta: {
       ...getAiImageHolderMeta(),
       ...meta
@@ -132,8 +136,7 @@ function createAiImageHolderShape(editor, id, shapeOverrides = {}) {
       w: AI_IMAGE_HOLDER_DEFAULT_W * scale,
       h: AI_IMAGE_HOLDER_DEFAULT_H * scale,
       name: AI_IMAGE_HOLDER_LABEL,
-      color: 'blue',
-      ...frameProps
+      ...holderProps
     }
   })
 }
@@ -1201,6 +1204,7 @@ export default function App() {
         onMount={handleMount}
         overrides={cowartUiOverrides}
         components={cowartComponents}
+        shapeUtils={[CowartAiImageShapeUtil]}
         tools={[CowartAnnotationTool]}
       />
       {isCanvasEmpty && !onboardingDismissed && (

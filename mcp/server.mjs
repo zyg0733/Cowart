@@ -18,6 +18,7 @@ const TOOL_MAKE_MASK = "make_cowart_mask";
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
 const AI_IMAGE_HOLDER_DEFAULT_H = 220;
+const COWART_AI_IMAGE_SHAPE = "cowart-ai-image";
 const PAGE_ID_PREFIX = "page:";
 const PAGE_ASSETS_ROUTE = "/page-assets/";
 const CANVAS_FILE_NAME = "cowart-canvas.json";
@@ -506,6 +507,9 @@ async function insertCowartImage(args = {}) {
 
   const fillAnchor = args.fillAnchor === true && Boolean(anchorShape);
   const anchorIsFrame = anchorShape?.type === "frame";
+  if (fillAnchor && anchorShape?.type === COWART_AI_IMAGE_SHAPE) {
+    throw new Error("To fill a cowart-ai-image holder, use replace_cowart_image (it sets the holder's own image), not insert_cowart_image fillAnchor.");
+  }
 
   // Holder fill: image becomes a child of (frame holder) or an overlay on
   // (legacy geo holder) the anchor. Otherwise it is placed beside the anchor.
@@ -949,8 +953,8 @@ async function createCowartImageHolder(args = {}) {
       ...(args.shapeMeta && typeof args.shapeMeta === "object" ? args.shapeMeta : {}),
     },
     id: shapeId,
-    type: "frame",
-    props: { w: width, h: height, name, color: "blue" },
+    type: COWART_AI_IMAGE_SHAPE,
+    props: { w: width, h: height, name, prompt: nonEmptyString(args.prompt) ?? "", status: "empty", assetId: null },
     parentId,
     index,
     typeName: "shape",
@@ -983,7 +987,7 @@ async function replaceCowartImage(args = {}) {
   const pageId = findPageIdForShape(store, targetShape.id);
   if (!pageId) throw new Error(`Could not determine the page for ${targetShapeId}.`);
 
-  // A frame holder: replace the image inside it.
+  // A legacy frame holder: replace the image inside it.
   if (targetShape.type === "frame") {
     const child = getPageShapes(store, pageId).find(
       (shape) => shape.parentId === targetShape.id && shape.type === "image"
@@ -993,8 +997,11 @@ async function replaceCowartImage(args = {}) {
     }
     targetShape = child;
   }
-  if (targetShape.type !== "image") {
-    throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image shape.`);
+  // A cowart-ai-image holder owns its image via props.assetId, so filling/replacing
+  // it just swaps that assetId (and marks it filled) — no child image shape.
+  const isHolder = targetShape.type === COWART_AI_IMAGE_SHAPE;
+  if (targetShape.type !== "image" && !isHolder) {
+    throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image or AI 图片 holder.`);
   }
 
   const imageSize = source.dimensions;
@@ -1030,7 +1037,7 @@ async function replaceCowartImage(args = {}) {
 
   const updatedShape = {
     ...targetShape,
-    props: { ...targetShape.props, assetId, w: width, h: height },
+    props: { ...targetShape.props, assetId, w: width, h: height, ...(isHolder ? { status: "filled" } : {}) },
   };
 
   const removeOldAsset =
@@ -1741,6 +1748,7 @@ function toolDefinitions() {
           width: { type: "number", description: "Holder width in canvas units. Defaults to 320." },
           height: { type: "number", description: "Holder height in canvas units. Defaults to 220." },
           name: { type: "string", description: "Holder label. Defaults to AI 图片." },
+          prompt: { type: "string", description: "Optional prompt shown on the holder describing what to generate into it." },
           shapeMeta: { type: "object", description: "Additional tldraw shape metadata." },
           dryRun: { type: "boolean", description: "Calculate placement without saving." },
         },

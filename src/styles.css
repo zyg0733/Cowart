@@ -91,3 +91,300 @@ body {
   width: 100%;
   height: 100%;
 }
+
+/* Empty-canvas onboarding: viewport overlay that lets canvas interaction pass
+   through except over the card itself. */
+.cowart-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  pointer-events: none;
+}
+
+.cowart-empty-card {
+  pointer-events: auto;
+  max-width: 440px;
+  width: 100%;
+  padding: 24px 28px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #1f2430;
+  border: 1px solid rgba(31, 36, 48, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 18px 48px rgba(31, 36, 48, 0.18);
+}
+
+.cowart-empty-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.cowart-empty-subtitle {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #4a5568;
+}
+
+.cowart-empty-list {
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.cowart-empty-item {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  align-items: start;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cowart-empty-key {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #25bfef;
+  background: rgba(37, 191, 239, 0.12);
+  border: 1px solid rgba(37, 191, 239, 0.35);
+  border-radius: 8px;
+}
+
+.cowart-empty-dismiss {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: #25bfef;
+  border-radius: 10px;
+}
+
+.cowart-empty-dismiss:hover {
+  background: #1aa9d6;
+}
+
+/* Agent-activity toast: bottom-center, non-intrusive. */
+.cowart-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 76px;
+  transform: translateX(-50%);
+  z-index: 310;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  background: rgba(31, 36, 48, 0.94);
+  color: #fff;
+  border-radius: 999px;
+  box-shadow: 0 10px 30px rgba(31, 36, 48, 0.28);
+  font-size: 13px;
+}
+
+.cowart-toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #25bfef;
+  box-shadow: 0 0 0 4px rgba(37, 191, 239, 0.25);
+}
+
+.cowart-toast-text {
+  white-space: nowrap;
+}
+
+.cowart-toast-btn {
+  appearance: none;
+  cursor: pointer;
+  border: none;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2430;
+  background: #fff;
+  border-radius: 999px;
+}
+
+.cowart-toast-btn:hover {
+  background: #e8f7fd;
+}
+
+.cowart-toast-close {
+  appearance: none;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.cowart-toast-close:hover {
+  color: #fff;
+}
+
+/* Custom AI image holder shape */
+.cowart-ai-image {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(31, 36, 48, 0.12);
+}
+
+.cowart-ai-image--empty,
+.cowart-ai-image--requested,
+.cowart-ai-image--generating {
+  background: repeating-linear-gradient(45deg, #f7fbfe, #f7fbfe 12px, #eef6fb 12px, #eef6fb 24px);
+  box-shadow: inset 0 0 0 2px rgba(37, 191, 239, 0.45);
+}
+
+.cowart-ai-image--requested {
+  box-shadow: inset 0 0 0 2px rgba(255, 159, 10, 0.7);
+}
+
+.cowart-ai-image__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cowart-ai-image__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  text-align: center;
+  color: #1f2430;
+}
+
+.cowart-ai-image__label {
+  font-size: 13px;
+  font-weight: 650;
+  color: #1aa9d6;
+}
+
+.cowart-ai-image__state {
+  font-size: 12px;
+  color: #4a5568;
+}
+
+.cowart-ai-image__prompt {
+  font-size: 12px;
+  color: #1f2430;
+  max-width: 90%;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cowart-ai-image__hint {
+  font-size: 11px;
+  color: #8a93a3;
+}
+
+.cowart-ai-image__actions {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.cowart-ai-image:hover .cowart-ai-image__actions,
+.cowart-ai-image--empty .cowart-ai-image__actions,
+.cowart-ai-image--requested .cowart-ai-image__actions {
+  opacity: 1;
+}
+
+.cowart-ai-image__btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(37, 191, 239, 0.95);
+  border-radius: 999px;
+}
+
+.cowart-ai-image__btn:hover {
+  background: #1aa9d6;
+}
+
+.cowart-ai-image__btn--ghost {
+  padding: 4px 8px;
+  color: #1f2430;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 0 0 1px rgba(31, 36, 48, 0.15);
+}
+
+.cowart-ai-image__btn--ghost:hover {
+  background: #fff;
+  color: #1aa9d6;
+}
+
+.cowart-ai-image__editor {
+  position: absolute;
+  inset: 8px;
+  resize: none;
+  border: none;
+  outline: 2px solid #25bfef;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+  font-size: 13px;
+  color: #1f2430;
+  background: rgba(255, 255, 255, 0.98);
+  pointer-events: all;
+  z-index: 2;
+}
+
+.cowart-ai-image__badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff9f0a;
+  box-shadow: 0 0 0 4px rgba(255, 159, 10, 0.25);
+}
+
+.cowart-ai-image__spinner {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid rgba(37, 191, 239, 0.25);
+  border-top-color: #25bfef;
+  animation: cowart-ai-spin 0.8s linear infinite;
+}
+
+@keyframes cowart-ai-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

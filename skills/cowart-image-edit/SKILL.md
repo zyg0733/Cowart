@@ -31,6 +31,8 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
 
    Ignore editor chrome such as toolbars, blue selection outlines, resize handles, cursor icons, and unrelated neighboring images.
 
+   Once the screenshot has identified the target image, you may call the Cowart MCP `get_cowart_annotations` tool to read the exact 批注 text and the shape each arrow points at, instead of transcribing red label text from the screenshot. This is more reliable and cheaper than OCR. Use it only to read the annotations belonging to the image the screenshot already identified — do not scan the whole canvas to discover new edits, and still respect the guardrails below.
+
 3. Choose the source image for generation.
 
    Use the clean underlying image content visible in the provided screenshot as the visual base whenever possible.
@@ -58,7 +60,13 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    annotation-edit-20260620-153012.png
    ```
 
-   Resolve the actual local output image carefully before inserting it into Cowart. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
+   Preferred handoff: pass the revised image to Cowart **as base64** instead of
+   resolving a file. The `image_gen` tool returns base64 in the
+   `image_generation_call.result`; pass it to `insert_cowart_image` via
+   `imageBase64` (or `imageDataUrl`). Cowart decodes, reads dimensions, and saves it
+   into the page assets folder — no dependence on `$CODEX_HOME/generated_images`.
+
+   Only if you have a real file path and no base64, resolve it carefully. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
 
    Preferred resolution order:
 
@@ -92,6 +100,10 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    - If the source image is inside an `AI 图片` frame, use the frame's page-level bounds as the anchor and place the new image as a sibling of that frame.
    - Otherwise use the source image's own bounds and parent.
    - When the annotated source appears to have earlier revision images nearby, prefer placing the new revised image to the right of the currently annotated/source image, because older annotation outputs may already live on the left.
+   - To keep an auditable trail, pass `lineageOf` (the source image shape id) plus
+     `prompt` and `version` to `insert_cowart_image`. It records lineage metadata and
+     draws a dotted connector from the previous version to the new one, so the
+     original → v2 → v3 progression is visible and tracks moves.
    - Place the new image to the right of the anchor with a margin of about `40` canvas units.
    - Match the displayed width and height of the anchor unless the user asks for a different size.
    - If that position would overlap existing content, keep moving right by `anchor width + 40` until the new image is clear.
@@ -167,6 +179,28 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    - the original 批注 arrows and labels are still visible
    - the new revised image appears beside the original
    - the new image does not include annotation arrows, labels, selections, or UI chrome
+
+## Region-only edits (masked / inpainting)
+
+When the change is confined to a marked area and the rest of the image must stay
+pixel-identical, prefer a masked edit over regenerating the whole image:
+
+1. Determine the edit region. Use `get_cowart_annotations` to get the annotation
+   target and arrow tip, or have the user draw a rectangle over the area.
+2. Build a mask with the Cowart MCP `make_cowart_mask` tool: pass the target image
+   shape plus the region as `region` (page coords `{x,y,w,h}`, e.g. a box around the
+   annotation tip) or `regionShapeId` (a rectangle marking the area), with
+   `returnBase64: true`. It returns the source image + a PNG mask in the image's pixel
+   space (transparent = edit, opaque = keep).
+3. Call `image_gen` with the source image, the mask, and a prompt describing only the
+   change. The model edits inside the transparent area and preserves the rest.
+4. Write the result back:
+   - to revise in place (only when the user wants to edit the original), use
+     `replace_cowart_image` with the result `imageBase64` and the target shape id;
+   - otherwise place the edited copy beside the original with `insert_cowart_image`.
+
+Use `padding` to give the model a little context around the region. `invert: true`
+flips polarity if the model you call treats opaque as the editable area.
 
 ## Guardrails
 

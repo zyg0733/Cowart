@@ -41,18 +41,24 @@ import {
 } from 'tldraw'
 import { AllSelection } from '@tiptap/pm/state'
 import 'tldraw/tldraw.css'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
+import { diffRemoteSnapshot, isCanvasSnapshot, storeDiffersFromBaseline } from './canvasSync.js'
+import {
+  COWART_AI_IMAGE_SHAPE,
+  CowartAiImageShapeUtil,
+  AI_IMAGE_HOLDER_LABEL,
+  AI_IMAGE_HOLDER_DEFAULT_W,
+  AI_IMAGE_HOLDER_DEFAULT_H
+} from './CowartAiImageShape.jsx'
 
 const CANVAS_ENDPOINT = '/api/canvas'
 const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
+const EXPORT_RESULT_ENDPOINT = '/api/canvas/export-result'
 const SELECTION_ENDPOINT = '/api/selection'
 const VIEW_STATE_ENDPOINT = '/api/view-state'
 const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'
 const AI_IMAGE_TOOL_ID = 'ai-image'
-const AI_IMAGE_HOLDER_LABEL = 'AI 图片'
-const AI_IMAGE_HOLDER_DEFAULT_W = 320
-const AI_IMAGE_HOLDER_DEFAULT_H = 220
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
 const ANNOTATION_TOOL_LABEL = '标注'
 const ANNOTATION_DEFAULT_COLOR = 'red'
@@ -71,49 +77,39 @@ const annotationToolIcon = (
   />
 )
 
-function isCanvasSnapshot(value) {
-  return value && typeof value === 'object' && value.store && value.schema
-}
-
-function recordsAreEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
-
-function storeChangedSinceSnapshot(editor, baselineStore) {
-  const currentStore = editor.store.getStoreSnapshot().store
-  const baselineIds = new Set(Object.keys(baselineStore))
-
-  for (const [id, baselineRecord] of Object.entries(baselineStore)) {
-    const currentRecord = currentStore[id]
-    if (!currentRecord) return true
-    if (!recordsAreEqual(currentRecord, baselineRecord)) return true
-  }
-
-  for (const id of Object.keys(currentStore)) {
-    if (!baselineIds.has(id)) return true
-  }
-
-  return false
-}
-
 function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = false } = {}) {
-  if (!isCanvasSnapshot(snapshot)) return 0
+  if (!isCanvasSnapshot(snapshot)) return { changed: 0, addedShapeIds: [] }
 
   const migratedSnapshot = editor.store.migrateSnapshot(snapshot)
-  const recordsToPut = Object.values(migratedSnapshot.store).filter((record) => {
-    const localRecord = editor.store.get(record.id)
-    if (!localRecord) return true
-    if (preserveLocalChanges) return false
-    return !recordsAreEqual(localRecord, record)
-  })
+  const { recordsToPut, idsToRemove, switchToPageId } = diffRemoteSnapshot(
+    editor.store.getStoreSnapshot().store,
+    migratedSnapshot.store,
+    { preserveLocalChanges, currentPageId: editor.getCurrentPageId() }
+  )
 
-  if (recordsToPut.length === 0) return 0
+  if (recordsToPut.length === 0 && idsToRemove.length === 0) return { changed: 0, addedShapeIds: [] }
 
-  editor.store.mergeRemoteChanges(() => {
-    editor.store.put(recordsToPut)
-  })
+  // Shapes that did not exist locally before this apply = newly added remotely
+  // (e.g. an agent insert). Captured before the put so callers can surface them.
+  const addedShapeIds = recordsToPut
+    .filter((record) => record.typeName === 'shape' && !editor.store.get(record.id))
+    .map((record) => record.id)
 
-  return recordsToPut.length
+  // Apply additions/updates first so a surviving page we may switch to exists.
+  if (recordsToPut.length > 0) {
+    editor.store.mergeRemoteChanges(() => {
+      editor.store.put(recordsToPut)
+    })
+  }
+
+  if (idsToRemove.length > 0) {
+    if (switchToPageId) editor.setCurrentPage(switchToPageId)
+    editor.store.mergeRemoteChanges(() => {
+      editor.store.remove(idsToRemove)
+    })
+  }
+
+  return { changed: recordsToPut.length + idsToRemove.length, addedShapeIds }
 }
 
 function getAiImageHolderMeta() {
@@ -126,12 +122,12 @@ function getAiImageHolderMeta() {
 function createAiImageHolderShape(editor, id, shapeOverrides = {}) {
   const scale = editor.getResizeScaleFactor()
   const { meta, props, ...shapeRecordOverrides } = shapeOverrides
-  const { scale: _scale, ...frameProps } = props ?? {}
+  const { scale: _scale, color: _color, ...holderProps } = props ?? {}
 
   return editor.createShape({
     ...shapeRecordOverrides,
     id,
-    type: 'frame',
+    type: COWART_AI_IMAGE_SHAPE,
     meta: {
       ...getAiImageHolderMeta(),
       ...meta
@@ -140,8 +136,7 @@ function createAiImageHolderShape(editor, id, shapeOverrides = {}) {
       w: AI_IMAGE_HOLDER_DEFAULT_W * scale,
       h: AI_IMAGE_HOLDER_DEFAULT_H * scale,
       name: AI_IMAGE_HOLDER_LABEL,
-      color: 'blue',
-      ...frameProps
+      ...holderProps
     }
   })
 }
@@ -595,6 +590,60 @@ function CowartToolbar(props) {
   )
 }
 
+function resolveExportShapeIds(editor, request) {
+  if (request.mode === 'shapes' && Array.isArray(request.shapeIds)) return request.shapeIds
+  if (request.mode === 'selection') return editor.getSelectedShapeIds()
+  if (request.mode === 'page' && request.pageId) return [...editor.getPageShapeIds(request.pageId)]
+  return [...editor.getCurrentPageShapeIds()]
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read export blob.'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function postExportResult(payload) {
+  return fetch(EXPORT_RESULT_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).catch((error) => console.error(error))
+}
+
+// Render an export the MCP requested (it cannot rasterize tldraw itself) and
+// post the image back so the held MCP request can resolve.
+async function handleCowartExportRequest(editor, event) {
+  let request = null
+  try {
+    request = JSON.parse(event.data)
+  } catch {
+    return
+  }
+  if (!request?.requestId) return
+
+  try {
+    const shapeIds = resolveExportShapeIds(editor, request)
+    if (!shapeIds || shapeIds.length === 0) {
+      throw new Error('Nothing to export for the requested target.')
+    }
+    const format = ['png', 'jpeg', 'svg', 'webp'].includes(request.format) ? request.format : 'png'
+    const options = { format }
+    if (Number.isFinite(request.scale)) options.scale = request.scale
+    if (Number.isFinite(request.padding)) options.padding = request.padding
+    if (typeof request.background === 'boolean') options.background = request.background
+
+    const image = await editor.toImage(shapeIds, options)
+    const base64 = await blobToBase64(image.blob)
+    await postExportResult({ requestId: request.requestId, base64, width: image.width, height: image.height, format })
+  } catch (error) {
+    await postExportResult({ requestId: request.requestId, error: String(error?.message ?? error) })
+  }
+}
+
 function getCowartSelection(editor) {
   const selectedShapeIds = editor.getSelectedShapeIds()
   return selectedShapeIds.map((id) => {
@@ -680,10 +729,104 @@ function writeCowartSelectionState(selectionSnapshot) {
   })
 }
 
+const ONBOARDING_DISMISSED_KEY = 'cowart-onboarding-dismissed'
+const IS_ZH = typeof navigator !== 'undefined' && (navigator.language || '').toLowerCase().startsWith('zh')
+
+function readOnboardingDismissed() {
+  try {
+    return localStorage.getItem(ONBOARDING_DISMISSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+const ONBOARDING_COPY = IS_ZH
+  ? {
+      title: '欢迎使用 Cowart 画布',
+      subtitle: '这是你和 Codex 共享的无限画布。',
+      items: [
+        ['A', '按 A 或从工具栏拖出「AI 图片」框，让 Codex 生成图片填入'],
+        ['C', '按 C 批注图片，让 Codex 按批注生成修订图'],
+        ['✎', '让 Codex 在画布上作图（流程图、标注），或把结果导出为图片']
+      ],
+      dismiss: '开始使用'
+    }
+  : {
+      title: 'Welcome to the Cowart canvas',
+      subtitle: 'An infinite canvas you share with Codex.',
+      items: [
+        ['A', 'Press A (or drag from the toolbar) to add an AI image holder, then ask Codex to fill it'],
+        ['C', 'Press C to annotate an image, then ask Codex to generate a revision'],
+        ['✎', 'Ask Codex to draw shapes (flowcharts, labels) or export the canvas as an image']
+      ],
+      dismiss: 'Get started'
+    }
+
+function CowartEmptyOverlay({ onDismiss }) {
+  return (
+    <div className="cowart-empty">
+      <div className="cowart-empty-card" role="dialog" aria-label={ONBOARDING_COPY.title}>
+        <h1 className="cowart-empty-title">{ONBOARDING_COPY.title}</h1>
+        <p className="cowart-empty-subtitle">{ONBOARDING_COPY.subtitle}</p>
+        <ul className="cowart-empty-list">
+          {ONBOARDING_COPY.items.map(([key, text]) => (
+            <li key={key} className="cowart-empty-item">
+              <span className="cowart-empty-key">{key}</span>
+              <span>{text}</span>
+            </li>
+          ))}
+        </ul>
+        <button className="cowart-empty-dismiss" type="button" onClick={onDismiss}>
+          {ONBOARDING_COPY.dismiss}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const TOAST_COPY = IS_ZH
+  ? { label: (n) => `Codex 更新了画布 · ${n} 个新图形`, locate: '查看', dismiss: '关闭' }
+  : { label: (n) => `Codex updated the canvas · ${n} new shape${n === 1 ? '' : 's'}`, locate: 'Show', dismiss: 'Dismiss' }
+
+function CowartAgentToast({ activity, onLocate, onDismiss }) {
+  return (
+    <div className="cowart-toast" role="status" aria-live="polite">
+      <span className="cowart-toast-dot" aria-hidden="true" />
+      <span className="cowart-toast-text">{TOAST_COPY.label(activity.count)}</span>
+      <button className="cowart-toast-btn" type="button" onClick={onLocate}>
+        {TOAST_COPY.locate}
+      </button>
+      <button className="cowart-toast-close" type="button" aria-label={TOAST_COPY.dismiss} onClick={onDismiss}>
+        ×
+      </button>
+    </div>
+  )
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState()
   const [viewState, setViewState] = useState()
   const [loadError, setLoadError] = useState(null)
+  const [isCanvasEmpty, setIsCanvasEmpty] = useState(false)
+  const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed)
+  const [agentActivity, setAgentActivity] = useState(null)
+  const revisionRef = useRef(null)
+  const editorRef = useRef(null)
+
+  useEffect(() => {
+    if (!agentActivity) return
+    const timer = window.setTimeout(() => setAgentActivity(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [agentActivity])
+
+  const dismissOnboarding = useCallback(() => {
+    setOnboardingDismissed(true)
+    try {
+      localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1')
+    } catch {
+      // ignore storage failures; dismissal still holds for this session
+    }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -704,6 +847,7 @@ export default function App() {
           canvasResponse.json(),
           viewStateResponse.json()
         ])
+        revisionRef.current = canvasData.revision ?? null
         setSnapshot(canvasData.snapshot ?? null)
         setViewState(viewStateData.viewState ?? null)
       } catch (error) {
@@ -723,6 +867,7 @@ export default function App() {
     window.__cowartEditor = editor
     window.__cowartSelection = () => getCowartSelection(editor)
     window.__cowartViewState = () => getCowartViewState(editor)
+    editorRef.current = editor
     let lastSyncedSelectionState = ''
     let isSelectionStateSaving = false
     let hasPendingSelectionState = false
@@ -735,6 +880,10 @@ export default function App() {
     })
 
     async function syncSelectionState() {
+      // Cheap to recompute on the existing 250ms cadence; setState bails when
+      // unchanged. Catches shape add/remove and page switches for the empty state.
+      setIsCanvasEmpty(editor.getCurrentPageShapeIds().size === 0)
+
       const selectionSnapshot = getCowartSelectionSnapshot(editor)
       writeCowartSelectionState(selectionSnapshot)
 
@@ -830,15 +979,29 @@ export default function App() {
 
       isSaving = true
       try {
-        const body = JSON.stringify(editor.store.getStoreSnapshot())
+        const body = JSON.stringify({
+          snapshot: editor.store.getStoreSnapshot(),
+          baseRevision: revisionRef.current
+        })
         const response = await fetch(CANVAS_ENDPOINT, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body
         })
+        if (response.status === 409) {
+          // Someone else wrote since our last load/save. Merge their changes in
+          // (keeping our local edits) and retry with the new base revision.
+          const conflict = await response.json()
+          revisionRef.current = conflict.revision ?? revisionRef.current
+          applyRemoteCanvasSnapshot(editor, conflict.snapshot, { preserveLocalChanges: true })
+          hasPendingSave = true
+          return
+        }
         if (!response.ok) {
           throw new Error(`Failed to save canvas: ${response.status}`)
         }
+        const result = await response.json()
+        revisionRef.current = result.revision ?? revisionRef.current
         hasUnsavedChanges = false
       } catch (error) {
         console.error(error)
@@ -873,12 +1036,21 @@ export default function App() {
 
         const canvasData = await response.json()
         const effectivePreserve =
-          preserveLocalChanges || (preFetchStore && storeChangedSinceSnapshot(editor, preFetchStore))
-        const changedRecords = applyRemoteCanvasSnapshot(editor, canvasData.snapshot, {
+          preserveLocalChanges ||
+          (preFetchStore && storeDiffersFromBaseline(editor.store.getStoreSnapshot().store, preFetchStore))
+        const { changed, addedShapeIds } = applyRemoteCanvasSnapshot(editor, canvasData.snapshot, {
           preserveLocalChanges: effectivePreserve
         })
+        revisionRef.current = canvasData.revision ?? revisionRef.current
 
-        if (changedRecords > 0 && effectivePreserve) {
+        // This path only runs for writes by someone else (the agent / another
+        // tab); our own saves are skipped via the revision check. Surface newly
+        // added shapes so the user notices Codex changed the canvas.
+        if (addedShapeIds.length > 0) {
+          setAgentActivity({ count: addedShapeIds.length, shapeIds: addedShapeIds, at: Date.now() })
+        }
+
+        if (changed > 0 && effectivePreserve) {
           hasUnsavedChanges = true
           if (isSaving) {
             hasPendingSave = true
@@ -904,7 +1076,20 @@ export default function App() {
     let canvasEvents = null
     if ('EventSource' in window) {
       canvasEvents = new EventSource(CANVAS_EVENTS_ENDPOINT)
-      canvasEvents.addEventListener('canvas-changed', loadRemoteCanvasSnapshot)
+      canvasEvents.addEventListener('canvas-changed', (event) => {
+        let payloadRevision = null
+        try {
+          payloadRevision = JSON.parse(event.data)?.revision ?? null
+        } catch {
+          payloadRevision = null
+        }
+        // Skip the reload for a revision we already hold (typically our own save).
+        if (payloadRevision !== null && payloadRevision === revisionRef.current) return
+        loadRemoteCanvasSnapshot()
+      })
+      canvasEvents.addEventListener('export-requested', (event) => {
+        handleCowartExportRequest(editor, event)
+      })
       canvasEvents.onerror = (error) => {
         console.warn('Cowart canvas live refresh disconnected.', error)
       }
@@ -985,6 +1170,7 @@ export default function App() {
         delete window.__cowartSelection
         delete window.__cowartViewState
       }
+      if (editorRef.current === editor) editorRef.current = null
       document.getElementById(SELECTION_STATE_ELEMENT_ID)?.remove()
       unsubscribe()
       unsubscribeAnnotationEditingToolLock()
@@ -1018,8 +1204,27 @@ export default function App() {
         onMount={handleMount}
         overrides={cowartUiOverrides}
         components={cowartComponents}
+        shapeUtils={[CowartAiImageShapeUtil]}
         tools={[CowartAnnotationTool]}
       />
+      {isCanvasEmpty && !onboardingDismissed && (
+        <CowartEmptyOverlay onDismiss={dismissOnboarding} />
+      )}
+      {agentActivity && (
+        <CowartAgentToast
+          activity={agentActivity}
+          onLocate={() => {
+            const editor = editorRef.current
+            if (editor && agentActivity.shapeIds?.length) {
+              editor.setCurrentTool('select')
+              editor.select(...agentActivity.shapeIds)
+              editor.zoomToSelection({ animation: { duration: 320 } })
+            }
+            setAgentActivity(null)
+          }}
+          onDismiss={() => setAgentActivity(null)}
+        />
+      )}
     </main>
   )
 }

@@ -8,10 +8,11 @@ English README: [README.en.md](README.en.md)
 
 - 在 Codex 中打开一个本地 tldraw 无限画布。
 - 在当前项目目录中持久化画布页面和图片资源。
-- 在画布中创建 AI image holder，并让 Codex 生成图片填入选中的 holder。
-- 上传或提供 Cowart 标注截图，让 Codex 根据标注生成干净的新图并放到原图旁边。
-- 通过 Cowart MCP 工具感知与操作画布：读取选择状态与结构化画布内容、解析批注（文本与指向目标）、插入图片、创建 AI image holder、替换图片、创建图形（文本/便签/箭头/几何，箭头可绑定到节点形成可跟随的流程图连接）、为局部重绘生成蒙版、记录图片修订血缘（版本间连接）、按画布尺寸推荐生成尺寸、解析多图参考与风格锚点喂给生成、导出视图为图片文件，并保存到页面本地资源目录（AI 图片 holder 是自带状态的自定义形状）。
+- 在画布中创建 AI image holder；点击生成后形成当前页请求队列，Codex 顺序认领、生成、填回对应 holder，并显示 queued / generating / failed / filled 生命周期。
+- 直接从画布选择的批注或目标图读取结构化编辑意图，让 Codex 生成干净的新图并放到原图旁边；截图仍可作为结构化画布不可用时的 fallback。
+- 通过 Cowart MCP 工具感知与操作画布：读取选择状态与结构化画布内容、列出当前页生成请求、解析批注（文本与指向目标，支持 target / annotationIds / selectedOnly 过滤）、插入图片、创建 AI image holder、替换图片、更新 holder 请求状态、创建图形（文本/便签/箭头/几何，箭头可绑定到节点形成可跟随的流程图连接）、为局部重绘生成蒙版、记录图片修订血缘（版本间连接）、按画布尺寸推荐生成尺寸、解析多图参考与风格锚点喂给生成、导出视图为图片文件，并保存到页面本地资源目录（AI 图片 holder 是自带状态的自定义形状）。
 - 共享画布体验：空画布首启引导，以及 Codex 更新画布时的轻量提示（可一键定位到新内容）。
+- MCP server 版本：`0.4.0`；当前公开工具数：`12`。
 
 ## 安装
 
@@ -20,7 +21,7 @@ English README: [README.en.md](README.en.md)
 把下面这段发给 Codex：
 
 ```text
-请从 https://github.com/zhongerxin/cowart.git 安装 Cowart Codex 插件。
+请从 https://github.com/zyg0733/Cowart.git 安装 Cowart Codex 插件。
 请 clone 仓库到 ~/plugins/cowart，确认 .codex-plugin/plugin.json 存在，
 把插件加入 personal marketplace，先运行 codex plugin marketplace add ~，
 再运行 codex plugin add cowart@personal。
@@ -33,7 +34,7 @@ English README: [README.en.md](README.en.md)
 
 ```bash
 mkdir -p ~/plugins
-git clone https://github.com/zhongerxin/cowart.git ~/plugins/cowart
+git clone https://github.com/zyg0733/Cowart.git ~/plugins/cowart
 cd ~/plugins/cowart
 npm install
 npm run build
@@ -101,20 +102,43 @@ canvas/pages/<page-id>/assets/
 ### 生成新图
 
 1. 打开 Cowart 画布。
-2. 在画布里创建并选中一个 AI image holder。
-3. 在 Codex 中描述要生成的图片，例如：
+2. 在画布里创建 AI image holder，输入 prompt，并点击生成按钮。
+3. 在 Codex 中让它处理当前页请求，例如：
 
 ```text
-Generate a new image into the selected Cowart AI image holder.
+Process the requested Cowart AI image holders on the current page.
 ```
 
-Codex 会读取选中的 holder，按它的比例生成图片，并插入到 holder 中。
+Codex 会调用 `get_cowart_requests` 读取当前页 queued holder，按 FIFO 顺序逐个用
+`expectedRequestId` 认领，按 holder 的尺寸/参考图生成图片，再用同一个 request id
+填回对应 holder。生成失败会写入 failed 状态，用户可以在画布上重试；这不是后台
+daemon，也不会自动并行处理所有页面。
 
 ![使用 Cowart 生成并插入新图](assets/generate-image.png)
 
-### 根据标注图生成新图
+### 根据画布批注生成新图
 
-1. 在 Cowart 画布中对图片做标注。
+1. 在 Cowart 画布中对图片做批注，并选中目标图片或相关批注箭头。
+2. 使用提示：
+
+```text
+Use my selected Cowart annotations to generate a clean revised image beside the original.
+```
+
+Codex 会先读取 `get_cowart_selection`，再用 `get_cowart_annotations` 的
+`targetShapeId`、`annotationIds` 或 `selectedOnly` 过滤器解析批注。原图和批注不会
+被删除或移动，结果会作为新图放在原图旁边并记录血缘。若结构化画布数据不可用，
+仍可提供标注截图作为 fallback：
+
+```text
+Use my Cowart annotation screenshot as a fallback brief to generate a clean revised image beside the original.
+```
+
+![根据 Cowart 批注生成修订图](assets/annotation-edit.png)
+
+### 根据标注截图 fallback 生成新图
+
+1. 在 Cowart 画布中对图片做批注。
 2. 截图并把标注截图发给 Codex。
 3. 使用提示：
 
@@ -122,15 +146,13 @@ Codex 会读取选中的 holder，按它的比例生成图片，并插入到 hol
 Use my Cowart annotation screenshot to generate a clean revised image beside the original.
 ```
 
-Codex 会读取截图里的标注和箭头，生成去掉标注痕迹的新图，并把结果放在原图旁边。原图和标注不会被删除或移动。
-
-![根据 Cowart 标注截图生成修订图](assets/annotation-edit.png)
+截图流程只作为 fallback；优先使用画布结构化批注。
 
 ## 技能
 
 - `cowart:cowart-open-canvas`：打开 Cowart 本地画布。
-- `cowart:cowart-image-gen`：把生成图片插入选中的 AI image holder。
-- `cowart:cowart-image-edit`：根据用户提供的 Cowart 标注截图生成修订图。
+- `cowart:cowart-image-gen`：顺序处理当前页 AI image holder 生成请求，或把生成图片填入选中的 holder。
+- `cowart:cowart-image-edit`：根据选中的 Cowart 结构化批注生成修订图；截图是 fallback。
 - `cowart:cowart-sketch-to-image`：把画布上的草图作为结构参考生成成品图，并放在草图旁。
 
 ## 本地开发

@@ -1,7 +1,7 @@
 interface:
   display_name: "Cowart Image Gen"
-  short_description: "Generate an image into a selected Cowart AI holder"
-  default_prompt: "Use $cowart:cowart-image-gen to generate an image into the selected Cowart AI image holder."
+  short_description: "Process queued Cowart AI holder requests"
+  default_prompt: "Use $cowart:cowart-image-gen to process current-page Cowart AI image requests sequentially, claim each request with expectedRequestId, and fill the matching holder."
 
 policy:
   allow_implicit_invocation: true

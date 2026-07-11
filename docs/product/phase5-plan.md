@@ -1,6 +1,6 @@
 # Cowart Phase 5 设计方案 — 更好地发挥 tldraw × 图像模型
 
-> 视角：Codex 产品负责人。日期：2026-06-22。状态：方案（未开发）。
+> 视角：Codex 产品负责人。日期：2026-06-22。状态：已落地（历史方案与实现记录）。
 > 主题：把 tldraw 的能力（绑定/自定义形状/几何/导出）与图像模型能力
 > （蒙版编辑/图生图/多图参考/对话式迭代）叠加，闭合「人 × agent 共享画布」。
 
@@ -17,9 +17,9 @@
 一度不再写文件）。gpt-image-2 还原生支持 **input_image（参考/编辑）/ mask（局部重绘）/
 style_match（风格匹配）/ 灵活尺寸（WxH，16 整除、宽高比 1:3–3:1、≤3840×2160）**。
 
-**现状瓶颈**：Cowart 的 `insert_cowart_image` / `replace_cowart_image` **只吃文件路径**，
-且只做整图生成。于是 agent 拿到 base64 后要先猜文件位置（对抗上面的回归）才能交给
-Cowart —— 这是全链路最脆的接缝（skill 里最啰嗦的一段）。
+**原始瓶颈（已解决）**：Cowart 的 `insert_cowart_image` / `replace_cowart_image` 曾经
+**只吃文件路径**，且只做整图生成。于是 agent 拿到 base64 后要先猜文件位置（对抗上面的
+回归）才能交给 Cowart —— 这是全链路最脆的接缝（skill 里最啰嗦的一段）。
 
 **改动（headless、最小）**：
 - 给 `insert_cowart_image` / `replace_cowart_image` 增加 `imageBase64` / `imageDataUrl`
@@ -165,11 +165,18 @@ replace 已测。模型蒙版输出为委派；端到端需浏览器 + 真实模
 让 agent 开工前置 `status:"generating"`（用户经实时刷新看到转圈），生成完再用
 `replace_cowart_image` 填充。skill `cowart-image-gen` 已纳入该流程。
 
+**Phase 7 补充（已落地，server 0.4.0）**：活的 holder 从单个 `requested` 标志升级为
+相关请求生命周期。点击生成会写入 `meta.cowartRequest = { id, requestedAt, attempt }`；
+agent 通过 `get_cowart_requests` 读取当前页请求，用
+`update_cowart_holder({ status:"generating", expectedRequestId })` 认领，并用
+`replace_cowart_image({ expectedRequestId })` 填回。失败会持久化为 `failed` 供用户重试；
+取消/完成归档到 `meta.cowartLastRequest`。这仍然不是后台 worker、全页自动扫描或并行生成系统。
+
 **（原始目标，已达成）**：holder 从「带 meta 的 frame」升级为自定义形状，显示
 空/生成中/已填 状态、prompt、重生成入口；图片版本形成可追溯血缘。
 
 **数据模型**：自定义 `ShapeUtil` `cowart-ai-image`，props
-`{ w, h, prompt, status:"empty"|"generating"|"filled", assetId|null }`，在
+`{ w, h, prompt, status:"empty"|"requested"|"generating"|"failed"|"filled", assetId|null }`，在
 `<Tldraw shapeUtils={[CowartAiImageShapeUtil]}>` 注册。
 
 **血缘**：每次修订 = 新图放旁边 + **绑定箭头**（复用 5a）prev→new + 版本标签 +
@@ -200,6 +207,8 @@ ShapeUtil** 才能加载含该记录的画布。需：
 2. **5b 草图→图** ✅（复用 export+insert+5.0，最少新代码）
 3. **5c 区域蒙版编辑** ✅（最大价值；复用 annotations+replace+5.0；蒙版无头 zlib 编码）
 4. **5d 迭代血缘** ✅（复用 5a 绑定）；活的 holder 自定义形状已下放（理由见 5d 节）
+5. **Phase 7 agent-native 队列/选择态批注** ✅（`get_cowart_requests`、`expectedRequestId`、
+   `failed`、selection-scoped annotations；截图保留为 fallback）
 
 横切原则不变：加法不破坏、写操作走合并端点、镜像 UI 记录、能无头就无头验证、
 必须浏览器的（5c 蒙版渲染、5d 自定义形状）用 Claude Preview 截图 + DOM 断言验证、

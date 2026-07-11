@@ -5,7 +5,7 @@ import zlib from "node:zlib";
 import { generateKeyBetween } from "fractional-indexing";
 
 const SERVER_NAME = "Cowart MCP";
-const SERVER_VERSION = "0.3.0";
+const SERVER_VERSION = "0.4.0";
 const TOOL_GET_SELECTION = "get_cowart_selection";
 const TOOL_INSERT_IMAGE = "insert_cowart_image";
 const TOOL_GET_CANVAS = "get_cowart_canvas";
@@ -17,7 +17,8 @@ const TOOL_ADD_SHAPES = "add_cowart_shapes";
 const TOOL_MAKE_MASK = "make_cowart_mask";
 const TOOL_UPDATE_HOLDER = "update_cowart_holder";
 const TOOL_GET_REFERENCES = "get_cowart_references";
-const AI_IMAGE_HOLDER_STATUSES = ["empty", "requested", "generating", "filled"];
+const TOOL_GET_REQUESTS = "get_cowart_requests";
+const AI_IMAGE_HOLDER_STATUSES = ["empty", "requested", "generating", "failed", "filled"];
 const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 const AI_IMAGE_HOLDER_DEFAULT_W = 320;
 const AI_IMAGE_HOLDER_DEFAULT_H = 220;
@@ -251,6 +252,76 @@ function findPageIdForShape(store, shapeId) {
     record = parent;
   }
   return null;
+}
+
+function requestPrecondition(holderId, expectedRequestId) {
+  const requestId = nonEmptyString(expectedRequestId);
+  if (!requestId) return null;
+  return { id: holderId, field: "meta.cowartRequest.id", equals: requestId };
+}
+
+function currentHolderRequest(holder) {
+  const request = holder?.meta?.cowartRequest;
+  return request && typeof request === "object" ? request : null;
+}
+
+function currentHolderRequestId(holder) {
+  return nonEmptyString(currentHolderRequest(holder)?.id);
+}
+
+function assertExpectedRequest(holder, expectedRequestId, action) {
+  const expected = nonEmptyString(expectedRequestId);
+  const actual = currentHolderRequestId(holder);
+  if (actual && !expected) {
+    throw new Error(`Cannot ${action}: holder ${holder.id} has active request ${actual}; expectedRequestId is required.`);
+  }
+  if (!expected) return;
+  if (actual !== expected) {
+    throw new Error(
+      `Cannot ${action}: holder ${holder.id} request mismatch (expected ${expected}, current ${actual ?? "none"}).`
+    );
+  }
+}
+
+function newRequestId() {
+  return `cowart-request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function redactRequestError(value) {
+  const raw = String(value || "Generation failed.");
+  const redacted = raw
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/\b(secret|token|api[_ -]?key|password)\b[\w:="' -]*/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (redacted || "Generation failed.").slice(0, 240);
+}
+
+function requestAttempt(meta) {
+  const active = finiteNumber(meta?.cowartRequest?.attempt, null);
+  const last = finiteNumber(meta?.cowartLastRequest?.attempt, null);
+  return Math.max(active ?? 0, last ?? 0);
+}
+
+function makeCowartRequest(meta, args = {}) {
+  return {
+    id: nonEmptyString(args.requestId) || newRequestId(),
+    requestedAt: nonEmptyString(args.requestedAt) || new Date().toISOString(),
+    attempt: requestAttempt(meta) + 1,
+  };
+}
+
+function archiveRequest(request, fields = {}) {
+  if (!request) return null;
+  return { ...request, ...fields };
+}
+
+function requestConditionList(holderId, expectedRequestId, extra = []) {
+  const condition = requestPrecondition(holderId, expectedRequestId);
+  return condition ? [condition, ...extra] : [];
 }
 
 function getPageShapes(store, pageId) {
@@ -907,21 +978,96 @@ async function getCowartCanvas(args = {}) {
   };
 }
 
+function isCowartAiImageHolder(shape) {
+  return shape?.typeName === "shape" && shape.type === COWART_AI_IMAGE_SHAPE;
+}
+
+function normalizeRequestStatuses(args) {
+  const values = Array.isArray(args.statuses) ? args.statuses : nonEmptyString(args.status) ? [args.status] : ["requested"];
+  if (values.length === 0) return new Set(["requested"]);
+  for (const status of values) {
+    if (typeof status !== "string" || !AI_IMAGE_HOLDER_STATUSES.includes(status)) {
+      throw new Error(`Invalid request status "${String(status)}". Use one of: ${AI_IMAGE_HOLDER_STATUSES.join(", ")}.`);
+    }
+  }
+  return new Set(values);
+}
+
+function requestSortTime(request) {
+  const time = Date.parse(request?.requestedAt ?? "");
+  return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
+}
+
+async function getCowartRequests(args = {}) {
+  const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
+  const store = snapshot.store;
+  const viewState = await readViewState(args);
+  const statuses = normalizeRequestStatuses(args);
+  const requests = [];
+  const pages = resolveTargetPages(store, args, viewState);
+  pages.forEach((page, pageOrder) => {
+    const pageShapes = getPageShapes(store, page.id);
+    pageShapes.forEach((shape, shapeOrder) => {
+      if (!isCowartAiImageHolder(shape)) return;
+      const status = nonEmptyString(shape.props?.status) || "empty";
+      if (!statuses.has(status)) return;
+      const request = currentHolderRequest(shape);
+      requests.push({
+        holderId: shape.id,
+        pageId: page.id,
+        status,
+        prompt: typeof shape.props?.prompt === "string" ? shape.props.prompt : null,
+        requestId: nonEmptyString(request?.id),
+        request: request ?? null,
+        requestedAt: nonEmptyString(request?.requestedAt),
+        startedAt: nonEmptyString(request?.startedAt),
+        failedAt: nonEmptyString(request?.failedAt),
+        attempt: finiteNumber(request?.attempt, null),
+        error: request?.error ?? null,
+        legacy: !request,
+        suggestedGenSize: nearestGenSize(shape.props?.w, shape.props?.h),
+        meta: shape.meta ?? {},
+        _sort: { time: requestSortTime(request), pageOrder, shapeOrder, index: String(shape.index ?? "") },
+      });
+    });
+  });
+  requests.sort((a, b) => {
+    if (a._sort.time !== b._sort.time) return a._sort.time - b._sort.time;
+    if (a._sort.pageOrder !== b._sort.pageOrder) return a._sort.pageOrder - b._sort.pageOrder;
+    if (a._sort.index !== b._sort.index) return a._sort.index.localeCompare(b._sort.index);
+    return a._sort.shapeOrder - b._sort.shapeOrder;
+  });
+  for (const request of requests) delete request._sort;
+  return { cowartUrl, currentPageId: nonEmptyString(viewState?.currentPageId) ?? null, requests };
+}
+
 async function getCowartAnnotations(args = {}) {
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
   const viewState = await readViewState(args);
+  const { selection } = args.selectedOnly === true ? await readSelectionState(args) : { selection: null };
+  const selectedIds = new Set((selection?.selectedShapes ?? []).map((shape) => shape.id).filter(Boolean));
+  const targetShapeId = nonEmptyString(args.targetShapeId);
+  const annotationIds = Array.isArray(args.annotationIds)
+    ? new Set(args.annotationIds.filter((id) => typeof id === "string"))
+    : null;
   const annotations = [];
   for (const page of resolveTargetPages(store, args, viewState)) {
     const pageShapes = getPageShapes(store, page.id);
     for (const shape of pageShapes) {
       if (!isAnnotationArrow(shape)) continue;
+      if (annotationIds && !annotationIds.has(shape.id)) continue;
       const offset = pageOffsetForShape(store, shape);
       const start = shape.props?.start ?? { x: 0, y: 0 };
       const end = shape.props?.end ?? { x: 0, y: 0 };
       const startPoint = { x: offset.x + finiteNumber(start.x, 0), y: offset.y + finiteNumber(start.y, 0) };
       const endPoint = { x: offset.x + finiteNumber(end.x, 0), y: offset.y + finiteNumber(end.y, 0) };
       const target = findAnnotationTarget(store, pageShapes, endPoint, shape.id);
+      if (targetShapeId && target?.id !== targetShapeId) continue;
+      if (args.selectedOnly === true) {
+        if (selectedIds.size === 0) continue;
+        if (!selectedIds.has(shape.id) && !selectedIds.has(target?.id)) continue;
+      }
       annotations.push({
         id: shape.id,
         pageId: page.id,
@@ -937,10 +1083,11 @@ async function getCowartAnnotations(args = {}) {
   return { cowartUrl, currentPageId: nonEmptyString(viewState?.currentPageId) ?? null, annotations };
 }
 
-async function persistRecords(cowartUrl, store, snapshot, { put = [], remove = [] }) {
+async function persistRecords(cowartUrl, store, snapshot, { put = [], remove = [], conditions = [] }) {
   try {
-    await mergeCanvasRecords(cowartUrl, { put, remove });
+    await mergeCanvasRecords(cowartUrl, { put, remove, conditions });
   } catch (mergeError) {
+    if (conditions.length > 0) throw mergeError;
     // Older servers without the merge endpoint: fall back to a full save.
     try {
       for (const id of remove) delete store[id];
@@ -1039,6 +1186,7 @@ async function replaceCowartImage(args = {}) {
   if (targetShape.type !== "image" && !isHolder) {
     throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image or AI 图片 holder.`);
   }
+  if (isHolder) assertExpectedRequest(targetShape, args.expectedRequestId, "replace holder image");
 
   const imageSize = source.dimensions;
   const width = finiteNumber(args.displayWidth, finiteNumber(targetShape.props?.w, imageSize?.width ?? 1));
@@ -1071,13 +1219,18 @@ async function replaceCowartImage(args = {}) {
     meta: args.assetMeta && typeof args.assetMeta === "object" ? args.assetMeta : {},
   };
 
+  const updatedMeta = args.genParams && typeof args.genParams === "object" ? { ...(targetShape.meta ?? {}), cowartGen: args.genParams } : { ...(targetShape.meta ?? {}) };
+  if (isHolder) {
+    const activeRequest = currentHolderRequest(targetShape);
+    const archived = archiveRequest(activeRequest, { completedAt: new Date().toISOString() });
+    if (archived) updatedMeta.cowartLastRequest = archived;
+    delete updatedMeta.cowartRequest;
+  }
+
   const updatedShape = {
     ...targetShape,
     props: { ...targetShape.props, assetId, w: width, h: height, ...(isHolder ? { status: "filled" } : {}) },
-    meta:
-      args.genParams && typeof args.genParams === "object"
-        ? { ...(targetShape.meta ?? {}), cowartGen: args.genParams }
-        : targetShape.meta,
+    meta: updatedMeta,
   };
 
   const removeOldAsset =
@@ -1089,10 +1242,18 @@ async function replaceCowartImage(args = {}) {
   if (!args.dryRun) {
     await mkdir(assetsDir, { recursive: true });
     await writeResolvedImage(source, filePath);
-    await persistRecords(cowartUrl, store, snapshot, {
-      put: [assetRecord, updatedShape],
-      remove: removeOldAsset ? [oldAssetId] : [],
-    });
+    try {
+      await persistRecords(cowartUrl, store, snapshot, {
+        put: [assetRecord, updatedShape],
+        remove: removeOldAsset ? [oldAssetId] : [],
+        conditions: isHolder ? requestConditionList(targetShape.id, args.expectedRequestId) : [],
+      });
+    } catch (error) {
+      if (isHolder && nonEmptyString(args.expectedRequestId)) {
+        await rm(filePath, { force: true }).catch(() => {});
+      }
+      throw error;
+    }
     // Now that the record is gone and nothing else references the asset, drop
     // the orphaned file too (best-effort; never fail the replace over cleanup).
     if (oldAssetFile && resolve(oldAssetFile) !== resolve(filePath)) {
@@ -1131,6 +1292,31 @@ function localAssetFileForShape(store, shape, canvasDir) {
   return isSafeChildPath(canvasDir, filePath) ? filePath : null;
 }
 
+function resolveImageLikeShape(store, shape, { label = "Target" } = {}) {
+  if (!shape) return null;
+  if (shape.type === "image") return shape;
+  if (shape.type === "frame") {
+    const pageId = findPageIdForShape(store, shape.id);
+    const child = pageId
+      ? getPageShapes(store, pageId).find((candidate) => candidate.parentId === shape.id && candidate.type === "image")
+      : null;
+    if (!child) throw new Error(`Frame ${shape.id} has no image.`);
+    return child;
+  }
+  if (shape.type === COWART_AI_IMAGE_SHAPE) {
+    const status = nonEmptyString(shape.props?.status) || "empty";
+    const assetId = nonEmptyString(shape.props?.assetId);
+    if (status !== "filled" || !assetId) {
+      throw new Error(`${label} cowart-ai-image holder ${shape.id} is not filled (status=${status}).`);
+    }
+    if (!store[assetId]) {
+      throw new Error(`${label} cowart-ai-image holder ${shape.id} is filled but asset ${assetId} is missing.`);
+    }
+    return shape;
+  }
+  return null;
+}
+
 function resolveSingleImageShape(store, { mode, shapeIds, selection }) {
   let ids = null;
   if (mode === "shapes" && Array.isArray(shapeIds)) ids = shapeIds;
@@ -1139,15 +1325,7 @@ function resolveSingleImageShape(store, { mode, shapeIds, selection }) {
   if (!ids || ids.length !== 1) return null;
   const shape = store[ids[0]];
   if (!shape) return null;
-  if (shape.type === "image") return shape;
-  if (shape.type === "frame") {
-    const pageId = findPageIdForShape(store, shape.id);
-    const child = pageId
-      ? getPageShapes(store, pageId).find((candidate) => candidate.parentId === shape.id && candidate.type === "image")
-      : null;
-    return child ?? null;
-  }
-  return null;
+  return resolveImageLikeShape(store, shape, { label: "Export target" });
 }
 
 async function exportCowartView(args = {}) {
@@ -1328,12 +1506,8 @@ async function makeCowartMask(args = {}) {
   const pageId = findPageIdForShape(store, targetShape.id);
   if (!pageId) throw new Error(`Could not determine the page for ${targetShapeId}.`);
 
-  if (targetShape.type === "frame") {
-    const child = getPageShapes(store, pageId).find((shape) => shape.parentId === targetShape.id && shape.type === "image");
-    if (!child) throw new Error(`Frame ${targetShapeId} has no image to edit.`);
-    targetShape = child;
-  }
-  if (targetShape.type !== "image") throw new Error(`Target ${targetShape.id} is type "${targetShape.type}", not an image.`);
+  targetShape = resolveImageLikeShape(store, targetShape, { label: "Mask target" });
+  if (!targetShape) throw new Error(`Target ${targetShapeId} is type "${store[targetShapeId]?.type}", not an image.`);
 
   const asset = store[targetShape.props?.assetId];
   const naturalW = Math.round(finiteNumber(asset?.props?.w, finiteNumber(targetShape.props?.w, 0)));
@@ -1382,7 +1556,11 @@ async function makeCowartMask(args = {}) {
   const canvasDir = resolveCanvasDir(args);
   const sourceImageFile = localAssetFileForShape(store, targetShape, canvasDir);
   const outDir = nonEmptyString(args.outputDir) ? pathResolve(args.outputDir) : join(canvasDir, "masks");
-  const maskFile = join(outDir, nonEmptyString(args.maskFileName) || `cowart-mask-${exportTimestamp()}.png`);
+  const maskFileName = sanitizeFileName(nonEmptyString(args.maskFileName) || `cowart-mask-${exportTimestamp()}.png`, "cowart-mask.png");
+  const maskFile = join(outDir, maskFileName);
+  if (!isSafeChildPath(outDir, maskFile)) {
+    throw new Error(`Unsafe mask file path: ${maskFile}`);
+  }
   if (!args.dryRun) {
     await mkdir(outDir, { recursive: true });
     await writeFile(maskFile, maskBuffer);
@@ -1687,7 +1865,35 @@ async function updateCowartHolder(args = {}) {
     if (!AI_IMAGE_HOLDER_STATUSES.includes(args.status)) {
       throw new Error(`Invalid status "${args.status}". Use one of: ${AI_IMAGE_HOLDER_STATUSES.join(", ")}.`);
     }
-    props.status = args.status;
+    const nextStatus = args.status;
+    assertExpectedRequest(holder, args.expectedRequestId, `mark holder ${nextStatus}`);
+    const activeRequest = currentHolderRequest(holder);
+    if (nextStatus === "requested") {
+      const previous = archiveRequest(activeRequest, { supersededAt: new Date().toISOString() });
+      if (previous) meta.cowartLastRequest = previous;
+      meta.cowartRequest = makeCowartRequest(meta, args);
+    } else if (nextStatus === "generating") {
+      if (activeRequest) {
+        meta.cowartRequest = {
+          ...activeRequest,
+          startedAt: nonEmptyString(activeRequest.startedAt) || new Date().toISOString(),
+        };
+      }
+    } else if (nextStatus === "failed") {
+      if (!activeRequest) throw new Error(`Cannot mark holder ${holder.id} failed without an active request.`);
+      meta.cowartRequest = {
+        ...activeRequest,
+        failedAt: new Date().toISOString(),
+        error: { message: redactRequestError(args.error ?? args.errorMessage) },
+      };
+    } else if (nextStatus === "empty" || nextStatus === "filled") {
+      const archived = archiveRequest(activeRequest, {
+        [nextStatus === "empty" ? "cancelledAt" : "completedAt"]: new Date().toISOString(),
+      });
+      if (archived) meta.cowartLastRequest = archived;
+      delete meta.cowartRequest;
+    }
+    props.status = nextStatus;
     changed = true;
   }
   if (typeof args.prompt === "string") {
@@ -1714,10 +1920,18 @@ async function updateCowartHolder(args = {}) {
     changed = true;
   }
   if (!changed) throw new Error("Provide status, prompt, references, styleRef, or genParams to update.");
+  assertExpectedRequest(holder, args.expectedRequestId, "update holder");
 
   const updated = { ...holder, props, meta };
   if (!args.dryRun) {
-    await persistRecords(cowartUrl, store, snapshot, { put: [updated] });
+    const extraConditions =
+      nonEmptyString(args.status) === "generating" && nonEmptyString(args.expectedRequestId)
+        ? [{ id: holder.id, field: "props.status", equals: "requested" }]
+        : [];
+    await persistRecords(cowartUrl, store, snapshot, {
+      put: [updated],
+      conditions: requestConditionList(holder.id, args.expectedRequestId, extraConditions),
+    });
   }
   return {
     cowartUrl,
@@ -1727,6 +1941,8 @@ async function updateCowartHolder(args = {}) {
     references: meta.cowartReferences ?? null,
     styleRef: meta.cowartStyleRef ?? null,
     genParams: meta.cowartGen ?? null,
+    request: meta.cowartRequest ?? null,
+    lastRequest: meta.cowartLastRequest ?? null,
     dryRun: Boolean(args.dryRun),
   };
 }
@@ -1890,6 +2106,29 @@ function toolDefinitions() {
           cowartUrl: { type: "string", description: "Running Cowart URL." },
           pageId: { type: "string", description: "Limit to a single page id. Defaults to the current view-state page." },
           allPages: { type: "boolean", description: "Include annotations on every page. Defaults to false." },
+          targetShapeId: { type: "string", description: "Return only annotations whose resolved target is this shape id." },
+          annotationIds: { type: "array", items: { type: "string" }, description: "Return only these annotation arrow shape ids." },
+          selectedOnly: { type: "boolean", description: "Return selected annotation arrows and annotations whose resolved target is selected." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: TOOL_GET_REQUESTS,
+      title: "Get Cowart Requests",
+      description:
+        "List cowart-ai-image holder generation requests on the current page by default, sorted FIFO by request time and stable canvas order. Defaults to requested holders; pass statuses to include generating or failed.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          projectDir: { type: "string", description: "Absolute Cowart project directory containing canvas/." },
+          canvasDir: { type: "string", description: "Absolute canvas directory. Overrides projectDir." },
+          cowartUrl: { type: "string", description: "Running Cowart URL." },
+          pageId: { type: "string", description: "Limit to a single page id. Defaults to the current view-state page." },
+          allPages: { type: "boolean", description: "Include requests on every page. Defaults to false." },
+          status: { type: "string", enum: AI_IMAGE_HOLDER_STATUSES, description: "Single holder status to list. Defaults to requested." },
+          statuses: { type: "array", items: { type: "string", enum: AI_IMAGE_HOLDER_STATUSES }, description: "Holder statuses to list. Defaults to [requested]." },
         },
         additionalProperties: false,
       },
@@ -1944,6 +2183,7 @@ function toolDefinitions() {
           keepOldAsset: { type: "boolean", description: "Keep the previous asset record/file instead of removing an now-unreferenced one. Defaults to false." },
           assetMeta: { type: "object", description: "Additional tldraw asset metadata." },
           genParams: { type: "object", description: "Full generation call (prompt, refs, size, model, seed, …) recorded on the shape (meta.cowartGen) for reproducibility." },
+          expectedRequestId: { type: "string", description: "For cowart-ai-image holders, require the active meta.cowartRequest.id to match before filling." },
           dryRun: { type: "boolean", description: "Calculate the replacement without copying or saving." },
         },
         additionalProperties: false,
@@ -2060,8 +2300,13 @@ function toolDefinitions() {
           holderId: { type: "string", description: "The cowart-ai-image holder shape id. Falls back to targetShapeId/shapeId or the current selection." },
           targetShapeId: { type: "string", description: "Alias for holderId." },
           shapeId: { type: "string", description: "Alias for holderId." },
-          status: { type: "string", enum: ["empty", "requested", "generating", "filled"], description: "New holder status." },
+          status: { type: "string", enum: AI_IMAGE_HOLDER_STATUSES, description: "New holder status." },
           prompt: { type: "string", description: "New prompt text shown on the holder (empty string clears it)." },
+          requestId: { type: "string", description: "Optional id for a newly requested generation. Generated when omitted." },
+          requestedAt: { type: "string", description: "Optional ISO timestamp for a newly requested generation. Defaults to now." },
+          expectedRequestId: { type: "string", description: "Require the active meta.cowartRequest.id to match before claiming, failing, cancelling, or filling." },
+          error: { type: "string", description: "Failure text when status is failed. Redacted and capped at 240 characters." },
+          errorMessage: { type: "string", description: "Alias for error when status is failed." },
           references: { type: "array", items: { type: "string" }, description: "Shape ids of canvas images to use as input_image references for this holder's generation (stored in meta.cowartReferences)." },
           styleRef: { type: "string", description: "Shape id of a style-reference image (style_match); stored in meta.cowartStyleRef. Empty string clears it." },
           genParams: { type: "object", description: "Full generation call (prompt, refs, size, model, seed, …) to record for reproducibility (stored in meta.cowartGen)." },
@@ -2152,6 +2397,17 @@ async function handleToolCall(id, params) {
               : " -> (no target)";
             return `${annotation.id}: "${annotation.text}"${target}`;
           })
+          .join("\n");
+    sendResult(id, { content: [{ type: "text", text: summary }], structuredContent: result });
+    return;
+  }
+
+  if (params?.name === TOOL_GET_REQUESTS) {
+    const result = await getCowartRequests(params.arguments ?? {});
+    const summary = result.requests.length === 0
+      ? "No Cowart holder requests found."
+      : result.requests
+          .map((request) => `${request.holderId}: status=${request.status}, request=${request.requestId ?? "legacy"}`)
           .join("\n");
     sendResult(id, { content: [{ type: "text", text: summary }], structuredContent: result });
     return;
@@ -2265,7 +2521,7 @@ async function handleRequest(message) {
         version: SERVER_VERSION,
       },
       instructions:
-        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_annotations (批注 text + targets), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), replace_cowart_image (swap a bitmap in place). Export: export_cowart_view (write an image file the agent can attach; pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area. Holder status: update_cowart_holder sets a cowart-ai-image holder's status (e.g. 'generating' before you start), prompt, references, styleRef, or genParams. References: get_cowart_references resolves a holder's reference/style images into files/base64 to pass as input_image. get_cowart_canvas also returns each shape's suggestedGenSize (a valid gpt-image size matching its box).",
+        "Read and update Cowart canvas state without hand-writing tldraw records. Perceive: get_cowart_canvas (structured board), get_cowart_requests (current-page holder generation queue), get_cowart_annotations (批注 text + targets, with target/annotation/selection filters), get_cowart_selection (current selection). Act: insert_cowart_image (place a bitmap), create_cowart_image_holder (make an AI 图片 slot), update_cowart_holder (request/claim/fail/cancel holder lifecycle with expectedRequestId), replace_cowart_image (fill or swap a bitmap in place, with expectedRequestId for holders). Export: export_cowart_view (write an image file the agent can attach; filled holders and single images copy assets directly, pages/selections need the canvas open in a browser to render). Author: add_cowart_shapes (create text/geo/note/line/arrow shapes; arrow fromId/toId binds a connector). Region edit: make_cowart_mask builds an inpainting mask so image gen only changes a marked area. References: get_cowart_references resolves a holder's reference/style images into files/base64 to pass as input_image. get_cowart_canvas also returns each shape's suggestedGenSize (a valid gpt-image size matching its box).",
     });
     return;
   }
@@ -2299,6 +2555,8 @@ const lines = readline.createInterface({
   crlfDelay: Infinity,
 });
 
+const pendingRequests = new Set();
+
 lines.on("line", (line) => {
   if (line.trim().length === 0) return;
 
@@ -2309,9 +2567,16 @@ lines.on("line", (line) => {
     return;
   }
 
-  handleRequest(message).catch((error) => {
+  const request = handleRequest(message).catch((error) => {
     if (message.id !== undefined) {
       sendError(message.id, JsonRpcError.INVALID_PARAMS, error instanceof Error ? error.message : String(error));
     }
   });
+  pendingRequests.add(request);
+  request.finally(() => pendingRequests.delete(request));
+});
+
+lines.on("close", async () => {
+  await Promise.allSettled([...pendingRequests]);
+  process.exit(0);
 });

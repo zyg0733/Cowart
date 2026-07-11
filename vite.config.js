@@ -141,6 +141,35 @@ function isViewState(value) {
   )
 }
 
+function recordConditionValue(record, condition) {
+  if (condition.field === 'meta.cowartRequest.id') return record?.meta?.cowartRequest?.id ?? null
+  if (condition.field === 'props.status') return record?.props?.status ?? null
+  return undefined
+}
+
+function validateRecordConditions(snapshot, conditions) {
+  if (!Array.isArray(conditions) || conditions.length === 0) return null
+  for (const condition of conditions) {
+    const id = typeof condition?.id === 'string' ? condition.id : null
+    const field = typeof condition?.field === 'string' ? condition.field : null
+    if (!id || !field || !['meta.cowartRequest.id', 'props.status'].includes(field)) {
+      return { error: 'Unsupported canvas record precondition.' }
+    }
+    const actual = recordConditionValue(snapshot.store[id], condition)
+    const expected = condition.equals ?? null
+    if (actual !== expected) {
+      return {
+        error: 'Canvas record precondition failed.',
+        id,
+        field,
+        expected,
+        actual
+      }
+    }
+  }
+  return null
+}
+
 function isSafeChildPath(parent, child) {
   const pathToChild = relative(parent, child)
   return pathToChild && !pathToChild.startsWith('..') && !pathToChild.includes(`..${sep}`)
@@ -730,6 +759,7 @@ function canvasStoragePlugin() {
           const patch = JSON.parse(body)
           const putRecords = Array.isArray(patch?.put) ? patch.put.filter((record) => record?.id) : []
           const removeIds = Array.isArray(patch?.remove) ? patch.remove.filter((id) => typeof id === 'string') : []
+          const conditions = Array.isArray(patch?.conditions) ? patch.conditions : []
           if (putRecords.length === 0 && removeIds.length === 0) {
             sendJson(res, 400, { error: 'Expected { put: [...records], remove: [...ids] }.' })
             return
@@ -741,6 +771,10 @@ function canvasStoragePlugin() {
               return { status: 409, body: { error: 'No canvas to merge into yet. Save a snapshot first.' } }
             }
             const snapshot = loaded.snapshot
+            const conditionFailure = validateRecordConditions(snapshot, conditions)
+            if (conditionFailure) {
+              return { status: 409, body: conditionFailure }
+            }
             for (const id of removeIds) delete snapshot.store[id]
             for (const record of putRecords) snapshot.store[record.id] = record
 

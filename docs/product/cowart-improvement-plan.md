@@ -4,7 +4,7 @@
 
 ## 1. 这是什么产品
 
-Cowart 是 Codex 的**本地无限画布**：tldraw 画布 + 本地 Web 服务 + MCP 工具 + 三个 skill（开画布 / 生成图 / 标注改图）。它的独特定位不是"又一个白板"，而是 **agent 与人共享的视觉工作台**——人在画布上构思、标注，Codex 在同一块画布上生成与迭代。
+Cowart 是 Codex 的**本地无限画布**：tldraw 画布 + 本地 Web 服务 + MCP 工具 + skills（开画布 / 生成图 / 标注改图 / 草图生图）。它的独特定位不是"又一个白板"，而是 **agent 与人共享的视觉工作台**——人在画布上构思、标注，Codex 在同一块画布上生成与迭代。
 
 ## 2. 核心洞察：agent 是"半盲半残"的
 
@@ -18,6 +18,8 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
 | 创建 AI 图片 holder | ✅ 工具栏 | ✅ create_holder（Phase 1） | — |
 | 替换 holder 里的图 | ✅ | ✅ replace_image（Phase 1） | — |
 | 导出区域/页为 PNG | ✅ | ✅ export_view（Phase 2） | — |
+| 处理 holder 生成请求 | ✅ 点击生成 | ✅ get_requests + expectedRequestId（Phase 7） | — |
+| 从选择态读批注编辑意图 | ✅ 肉眼看选区 | ✅ selection-scoped annotations（Phase 7） | — |
 
 **结论**：最高杠杆的改进不是加画布功能，而是**补齐 agent 的感知与动作**，让旗舰"标注→改图"闭环从"截图猜意图"升级为"读结构化数据"。
 
@@ -73,6 +75,32 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
   存入 `meta.cowartGen`（prompt+参考+尺寸+model+seed）→ 可按原设置重生成/分叉。
 - 验证：无头 13 项（含 `nearestGenSize` 极值裁剪、引用解析角色/base64、provenance 持久化）。
 
+### Phase 7 — agent-native 编辑与生成队列（已落地，server 0.4.0）
+主题：把"人点击生成"和"人选择批注"变成 agent 可安全消费的画布原生契约。
+
+- ✅ **当前页生成请求队列**：新增 `get_cowart_requests`，默认只列当前页 `requested`
+  的 `cowart-ai-image` holder，按 request time + 稳定画布顺序 FIFO 返回。可显式包含
+  `generating` / `failed` 或指定页面，但不默认扫全页。
+- ✅ **请求相关生命周期**：holder 记录 `meta.cowartRequest = { id, requestedAt, attempt }`；
+  agent 用 `update_cowart_holder({ status:"generating", expectedRequestId })` 认领，
+  `replace_cowart_image({ expectedRequestId })` 填回；失败用 `status:"failed"` 写入可重试错误。
+  完成/取消会归档到 `meta.cowartLastRequest`。旧无 id 的 requested holder 仍可无 expected id
+  认领，保持兼容。
+- ✅ **并发/取消安全**：`expectedRequestId` 在 `/api/canvas/records` 写锁内校验；
+  stale claim/fill 不改 canvas，失败的 staged 资产会清理。不会增加后台 daemon、第二队列存储、
+  全局任务面板或并行生成承诺。
+- ✅ **选择态批注编辑默认路径**：`get_cowart_annotations` 支持 `targetShapeId`、
+  `annotationIds`、`selectedOnly`；skill 从 `get_cowart_selection` 开始，选中箭头走
+  annotation ids，选中目标图走 target filter，没有选择时只读当前页并在多目标时问一个问题。
+  截图保留为 fallback。
+- ✅ **filled custom holder 可作为图像源**：filled `cowart-ai-image` holder 可用于导出和
+  `make_cowart_mask`；empty/requested/generating/failed holder 会得到明确错误。
+- ✅ **文档与 skill 同步**：生成、标注改图、草图生图 skill 与中英文 README 同步到
+  server `0.4.0`、MCP 工具数 `12`。
+
+后续仍保留的产品方向：variant grid、多版本面板、版本历史浏览和更强的 reference board UI
+手势。这些是 Phase 7 之上的体验层，不属于本次已交付的队列/选择态契约。
+
 ## 5. 稳定落地原则
 
 1. **加法不破坏**：只新增 MCP 工具，不改既有契约；旧 skill/curl 兜底仍可用。
@@ -80,6 +108,7 @@ Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破�
 3. **镜像 UI 记录**：MCP 创建的 holder/图片记录与 UI 完全一致，浏览器实时刷新即同步，**零 UI 偏差**。
 4. **可测**：每个工具配集成测试（变更类支持 `dryRun`）。
 5. **与 UI/skill 文档同步**：代码逻辑变更，对应 skill 文档同步更新。
+6. **画布是队列真源**：holder 请求状态保存在 shape meta 中；agent 不维护第二队列或后台任务。
 
 ## 6. 验收（Phase 1）
 

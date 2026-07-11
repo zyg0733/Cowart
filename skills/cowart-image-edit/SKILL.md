@@ -1,11 +1,15 @@
 ---
 name: cowart-image-edit
-description: Generate new AI images from user-supplied Cowart annotation screenshots. Use when the user provides one or more screenshots showing Cowart images marked with the 批注 tool, arrows, or visible edit notes and wants Codex to apply those requested changes, create revised bitmap images, and place each result beside the corresponding original or in a nearby clear area without replacing, moving, hiding, or deleting the original images or annotations.
+description: Generate revised AI images from Cowart 批注 annotations. Use when the user selects an annotated image or annotation arrows on the Cowart canvas, or provides a fallback screenshot, and wants Codex to apply the requested changes while leaving the original image and annotations intact.
 ---
 
 # Cowart Image Edit
 
-Use this skill to turn user-provided Cowart 批注 screenshots into revised AI-generated bitmaps placed next to the corresponding original images.
+Use this skill to turn Cowart 批注 annotations into revised AI-generated
+bitmaps. The default path is canvas-native: read the current selection, resolve
+structured annotations, generate a clean revision, and place the result beside
+the original. Screenshots remain a fallback when the canvas service or
+structured data is unavailable.
 
 ## Preconditions
 
@@ -15,68 +19,90 @@ The Cowart service should be running for the active project, usually at:
 http://127.0.0.1:43217
 ```
 
-The user is responsible for providing the relevant screenshot(s). Do not auto-capture the current canvas and do not scan the whole canvas to infer edit requests; a canvas may contain many images with different annotations.
+Do not scan all pages to infer edit requests. Start from the current selection.
+If nothing is selected, read only the current page's structured annotations and
+ask one focused clarification question when multiple targets could be edited.
 
 ## Workflow
 
-1. Read the user-provided screenshot(s).
+1. Read the canvas selection first.
 
-   Treat each screenshot as the authoritative edit brief for one output image unless the user says multiple screenshots belong to the same image.
+   Call `get_cowart_selection`. The selected shapes determine the default edit
+   scope:
 
-   If the user provides multiple screenshots, process them independently and keep their generated outputs separate. Do not merge annotations across screenshots unless explicitly requested.
+   - selected annotation arrows: collect their ids and call
+     `get_cowart_annotations({ annotationIds: [...] })`
+   - selected target image/frame/filled `cowart-ai-image` holder: call
+     `get_cowart_annotations({ targetShapeId: "<selected target id>" })`
+   - mixed selection or uncertain selection: call
+     `get_cowart_annotations({ selectedOnly: true })` and use only selected
+     arrows plus annotations whose resolved target is selected
 
-2. Extract the edit requirements from each screenshot.
+   These are the three supported structured filters: `annotationIds`,
+   `targetShapeId`, and `selectedOnly`.
 
-   Read visible 批注 labels, arrows, and nearby edit notes from the screenshot itself. Use the arrow tip or marked region to understand where each note applies.
+2. Handle no selection conservatively.
 
-   Ignore editor chrome such as toolbars, blue selection outlines, resize handles, cursor icons, and unrelated neighboring images.
+   If no shapes are selected, call `get_cowart_annotations` with no `allPages`
+   flag. This reads the current page only and preserves the existing unfiltered
+   current-page contract. If every returned annotation resolves to the same
+   target, proceed. If there are multiple target images, ask one focused
+   question such as:
 
-   Once the screenshot has identified the target image, you may call the Cowart MCP `get_cowart_annotations` tool to read the exact 批注 text and the shape each arrow points at, instead of transcribing red label text from the screenshot. This is more reliable and cheaper than OCR. Use it only to read the annotations belonging to the image the screenshot already identified — do not scan the whole canvas to discover new edits, and still respect the guardrails below.
+   ```text
+   Which annotated target should I revise: <id/label A> or <id/label B>?
+   ```
 
-3. Choose the source image for generation.
+   Do not ask a broad multi-part questionnaire, and do not switch to all-pages
+   discovery unless the user explicitly asks.
 
-   Use the clean underlying image content visible in the provided screenshot as the visual base whenever possible.
+3. Choose the source image.
 
-   If the screenshot is too cropped, obstructed, or low-resolution to serve as a good image base, ask the user for the original image export or a cleaner screenshot of that specific image.
+   The target may be a normal image, a legacy frame holder containing an image,
+   or a filled current `cowart-ai-image` holder. Export the clean source with
+   `export_cowart_view` or use `make_cowart_mask`, which can resolve filled
+   current holders to their owned asset. Empty, requested, generating, or failed
+   holders are not valid image sources.
 
-   Do not read the current Cowart canvas to discover edit intent. Use the screenshot for the requested changes. Cowart state may be read later only to place the generated result without covering existing content.
+   If structured data is unavailable but the user supplied a screenshot, use the
+   screenshot as the visual brief. Ignore editor chrome such as toolbars,
+   selection outlines, resize handles, cursors, and unrelated neighboring images.
 
-4. Prepare image-generation input.
+4. Prepare the edit prompt.
 
-   Use the provided screenshot, plus a cleaner source image if the user supplied one.
-
-   The generation prompt should:
+   Combine the structured annotation labels and target/arrow positions into one
+   concise instruction set. The prompt should:
 
    - apply the 批注 text as edit instructions
    - preserve the original image's subject, composition, aspect ratio, and style unless an annotation asks otherwise
    - remove all annotation artifacts from the output, including red arrows, labels, blue selection outlines, handles, and tool UI
    - output only the revised clean image
 
-5. Generate a new bitmap.
+5. Choose full-image or masked editing.
 
-   Use the built-in image generation flow available in the current environment. Do not overwrite the source image file. Save the new bitmap with a timestamped filename, for example:
+   Use a full-image edit when the annotations describe global style, layout, or
+   subject changes.
 
-   ```text
-   annotation-edit-20260620-153012.png
-   ```
+   Use a masked edit when the change is localized. Build the mask with
+   `make_cowart_mask`:
 
-   Preferred handoff: pass the revised image to Cowart **as base64** instead of
-   resolving a file. The `image_gen` tool returns base64 in the
-   `image_generation_call.result`; pass it to `insert_cowart_image` via
-   `imageBase64` (or `imageDataUrl`). Cowart decodes, reads dimensions, and saves it
-   into the page assets folder — no dependence on `$CODEX_HOME/generated_images`.
+   - pass `targetShapeId` for the image or filled holder
+   - use `region` around the annotation tip/target area, or `regionShapeId` when
+     the user drew a rectangle over the exact region
+   - set `returnBase64: true` when you want source image and mask bytes directly
 
-   Only if you have a real file path and no base64, resolve it carefully. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
+   The mask uses transparent pixels for the editable region and opaque pixels for
+   areas to preserve.
 
-   Preferred resolution order:
+6. Generate a new bitmap.
 
-   - Use the exact local image path returned by the current image generation tool call when one is available.
-   - If no new file path is returned, inspect the current Codex session JSONL for the current request and extract the PNG/base64 payload from the latest `image_generation_call.result`, then write it to the timestamped output filename.
-   - Use `$CODEX_HOME/generated_images` only when you can prove the file was created by the current request, for example by matching its timestamp after this generation step. Never pick an older image merely because it is the newest file in a stale generated_images directory.
+   Use the built-in image generation flow available in the current environment.
+   Do not overwrite the source image file. Prefer base64 from
+   `image_generation_call.result`; pass it to Cowart via `imageBase64` or
+   `imageDataUrl`. Only resolve a local file when the tool returned one for this
+   generation.
 
-   Before inserting the resolved file into Cowart, visually inspect the local bitmap and confirm it is the newly generated revised image for this screenshot, not a stale generated asset.
-
-6. Insert the revised image beside the original with Cowart MCP.
+7. Insert the revised image beside the original.
 
    Prefer the Cowart MCP `insert_cowart_image` tool. Do not hand-write
    tldraw `asset` / `shape` records or fractional `index` keys unless the MCP
@@ -85,19 +111,24 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    tldraw fractional index, places the image beside the anchor while avoiding
    overlaps, and saves through the running Cowart service.
 
-   Add a new tldraw image asset and a new image shape. Do not update, remove, hide, reparent, or reorder the original image, the original `AI 图片` frame, or any annotation shapes.
+   Add a new tldraw image asset and a new image shape. Do not update, remove,
+   hide, reparent, or reorder the original image, original holder, or annotation
+   shapes.
 
    Prefer a clear placement anchor when one is already available:
 
-   - If the user has selected the original image, use that image as the anchor.
-   - If the user has selected the original `AI 图片` frame, use that frame as the anchor.
-   - If the screenshot clearly shows the original image and there is a unique matching generated/original image or `AI 图片` frame on the current Cowart page, use that as the anchor without asking the user to select it.
-   - If there are multiple screenshots/outputs and the matching anchors are not uniquely identifiable, ask the user to select each corresponding anchor or provide an explicit placement order.
+   - If the user selected the original image, legacy frame, or filled current
+     holder, use it as the anchor.
+   - If selected annotation arrows resolve to one target, use that target as the
+     anchor.
+   - If multiple outputs have non-unique anchors, ask one focused question to map
+     targets to outputs.
    - If no anchor is clear and the user has not required a specific side-by-side comparison, place the result in a nearby clear area on the current page where it does not cover, move, hide, or delete the original image or annotations.
 
    Placement rules:
 
-   - If the source image is inside an `AI 图片` frame, use the frame's page-level bounds as the anchor and place the new image as a sibling of that frame.
+   - If the source image is inside a legacy `AI 图片` frame, use the frame's page-level bounds as the anchor and place the new image as a sibling of that frame.
+   - If the source is a filled current `cowart-ai-image` holder, use the holder bounds as the anchor and place the revision as a sibling, not inside the holder.
    - Otherwise use the source image's own bounds and parent.
    - When the annotated source appears to have earlier revision images nearby, prefer placing the new revised image to the right of the currently annotated/source image, because older annotation outputs may already live on the left.
    - To keep an auditable trail, pass `lineageOf` (the source image shape id) plus
@@ -119,9 +150,10 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    }
    ```
 
-7. Save through Cowart.
+8. Save through Cowart.
 
-   Only do Cowart state access after the bitmap is generated. Use this access only to insert the new image beside the anchor or in a nearby clear area, not to discover edit intent.
+   Use Cowart state to insert the new image beside the anchor or in a nearby
+   clear area, not to mutate the original or annotations.
 
    Preferred MCP call shape:
 
@@ -139,7 +171,7 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
      "shapeMeta": {
        "cowartGeneratedFromAnnotationEdit": true
      },
-     "altText": "Revised image generated from Cowart annotation screenshot"
+     "altText": "Revised image generated from Cowart annotations"
    }
    ```
 
@@ -171,12 +203,12 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
    canvas/pages/<page-id-without-page-prefix>/cowart-canvas.json
    ```
 
-8. Verify visually.
+9. Verify visually.
 
    Refresh the Cowart tab or let Vite hot-reload, then confirm:
 
    - the original image is still in the same place
-   - the original 批注 arrows and labels are still visible
+   - the original 批注 arrows and labels are still visible and unmodified
    - the new revised image appears beside the original
    - the new image does not include annotation arrows, labels, selections, or UI chrome
 
@@ -185,8 +217,10 @@ The user is responsible for providing the relevant screenshot(s). Do not auto-ca
 When the change is confined to a marked area and the rest of the image must stay
 pixel-identical, prefer a masked edit over regenerating the whole image:
 
-1. Determine the edit region. Use `get_cowart_annotations` to get the annotation
-   target and arrow tip, or have the user draw a rectangle over the area.
+1. Determine the edit region from selected structured annotations. Use
+   `get_cowart_annotations` with `annotationIds`, `targetShapeId`, or
+   `selectedOnly` to get the annotation target and arrow tip, or have the user
+   draw a rectangle over the area.
 2. Build a mask with the Cowart MCP `make_cowart_mask` tool: pass the target image
    shape plus the region as `region` (page coords `{x,y,w,h}`, e.g. a box around the
    annotation tip) or `regionShapeId` (a rectangle marking the area), with
@@ -202,11 +236,19 @@ pixel-identical, prefer a masked edit over regenerating the whole image:
 Use `padding` to give the model a little context around the region. `invert: true`
 flips polarity if the model you call treats opaque as the editable area.
 
+## Screenshot fallback
+
+Use a screenshot only when structured canvas access is unavailable, the user
+explicitly provides one, or a visual artifact is needed to disambiguate the edit.
+Treat each screenshot as a fallback brief for one output image unless the user
+says multiple screenshots belong to the same target. Keep screenshot-derived
+outputs separate and still preserve the original image and annotations.
+
 ## Guardrails
 
 - Never replace the original image unless the user explicitly asks for replacement.
 - Never delete or move annotation shapes; they are the visible edit brief.
-- Never put the revised image inside the original `AI 图片` frame, because that can cover the old image and make the before/after comparison harder.
-- Never auto-capture or scan the current canvas for edit intent; use the screenshot(s) supplied by the user.
+- Never put the revised image inside the original holder, because that can cover the old image and make the before/after comparison harder.
+- Never auto-capture screenshots or scan all pages for edit intent.
 - If the annotations contradict each other, generate the most literal combined interpretation and mention the ambiguity.
 - If a supplied screenshot shows selected-state outlines or toolbar UI, treat them as context only, not as content to generate.

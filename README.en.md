@@ -8,10 +8,11 @@ Cowart is a local infinite-canvas plugin for Codex. It brings a tldraw-powered c
 
 - Open a local tldraw infinite canvas from Codex.
 - Persist canvas pages and image assets in the active project directory.
-- Create AI image holders on the canvas and ask Codex to generate images into the selected holder.
-- Provide Cowart annotation screenshots and let Codex generate clean revised images beside the original.
-- Use Cowart MCP tools to perceive and act on the canvas: read selection state and structured canvas content, parse annotations (text and the shape each points at), insert images, create AI image holders, replace images, author shapes (text/sticky/arrow/geometry; arrows can bind to nodes for follow-on-move flowchart connectors), build inpainting masks for region-only edits, track image revision lineage (connectors between versions), suggest a generation size from the drawn box, resolve multi-image references and a style anchor to feed generation, export views to image files, and save page-local assets (the AI image holder is a custom stateful shape).
+- Create AI image holders on the canvas; clicking generate creates a current-page request queue that Codex processes sequentially, with queued / generating / failed / filled lifecycle states.
+- Read selected canvas annotations or selected target images as structured edit intent, then let Codex generate clean revised images beside the original. Annotation screenshots remain a fallback when structured canvas data is unavailable.
+- Use Cowart MCP tools to perceive and act on the canvas: read selection state and structured canvas content, list current-page generation requests, parse annotations (text and target shape, with target / annotationIds / selectedOnly filters), insert images, create AI image holders, replace images, update holder request status, author shapes (text/sticky/arrow/geometry; arrows can bind to nodes for follow-on-move flowchart connectors), build inpainting masks for region-only edits, track image revision lineage (connectors between versions), suggest a generation size from the drawn box, resolve multi-image references and a style anchor to feed generation, export views to image files, and save page-local assets (the AI image holder is a custom stateful shape).
 - Shared-canvas UX: a first-run empty-canvas guide, and a lightweight toast when Codex updates the canvas (one click to locate the new content).
+- MCP server version: `0.4.0`; current public tool count: `12`.
 
 ## Installation
 
@@ -20,7 +21,7 @@ Cowart is a local infinite-canvas plugin for Codex. It brings a tldraw-powered c
 Send the following message to Codex:
 
 ```text
-Please install the Cowart Codex plugin from https://github.com/zhongerxin/cowart.git.
+Please install the Cowart Codex plugin from https://github.com/zyg0733/Cowart.git.
 Clone the repository into ~/plugins/cowart, verify that .codex-plugin/plugin.json exists,
 add the plugin to the personal marketplace, run codex plugin marketplace add ~,
 then run codex plugin add cowart@personal.
@@ -33,7 +34,7 @@ Clone the plugin into the default location referenced by the Codex personal mark
 
 ```bash
 mkdir -p ~/plugins
-git clone https://github.com/zhongerxin/cowart.git ~/plugins/cowart
+git clone https://github.com/zyg0733/Cowart.git ~/plugins/cowart
 cd ~/plugins/cowart
 npm install
 npm run build
@@ -101,18 +102,44 @@ canvas/pages/<page-id>/assets/
 ### Generate A New Image
 
 1. Open the Cowart canvas.
-2. Create and select an AI image holder on the canvas.
-3. Describe the image you want Codex to generate, for example:
+2. Create an AI image holder, enter a prompt, and click its generate button.
+3. Ask Codex to process the current-page request queue, for example:
 
 ```text
-Generate a new image into the selected Cowart AI image holder.
+Process the requested Cowart AI image holders on the current page.
 ```
 
-Codex reads the selected holder, matches its aspect ratio, generates the image, and inserts it into the holder.
+Codex calls `get_cowart_requests`, claims each queued holder in FIFO order with
+`expectedRequestId`, generates using the holder size and references, then fills
+that same holder with the same request id. Failures are written back as a failed
+state so the user can retry from the canvas. Cowart does not run a background
+daemon, process requests in parallel, or scan every page automatically.
 
 ![Generate and insert a new image with Cowart](assets/generate-image.png)
 
-### Generate From An Annotation Screenshot
+### Generate From Canvas Annotations
+
+1. Annotate an image on the Cowart canvas and select the target image or relevant annotation arrows.
+2. Use this prompt:
+
+```text
+Use my selected Cowart annotations to generate a clean revised image beside the original.
+```
+
+Codex reads `get_cowart_selection`, then resolves annotations through
+`get_cowart_annotations` using `targetShapeId`, `annotationIds`, or
+`selectedOnly`. It keeps the original image and annotation shapes untouched,
+places the revised image beside the original, and records lineage. If structured
+canvas data is unavailable, you can still provide an annotation screenshot as a
+fallback brief:
+
+```text
+Use my Cowart annotation screenshot as a fallback brief to generate a clean revised image beside the original.
+```
+
+![Generate a revised image from Cowart annotations](assets/annotation-edit.png)
+
+### Generate From An Annotation Screenshot Fallback
 
 1. Annotate an image on the Cowart canvas.
 2. Take a screenshot of the annotated image and send it to Codex.
@@ -122,15 +149,13 @@ Codex reads the selected holder, matches its aspect ratio, generates the image, 
 Use my Cowart annotation screenshot to generate a clean revised image beside the original.
 ```
 
-Codex reads the notes and arrows in the screenshot, generates a clean revised image without annotation artifacts, and places it beside the original. The original image and annotations are not deleted or moved.
-
-![Generate a revised image from a Cowart annotation screenshot](assets/annotation-edit.png)
+The screenshot path is fallback only; structured canvas annotations are the default.
 
 ## Skills
 
 - `cowart:cowart-open-canvas`: open the local Cowart canvas.
-- `cowart:cowart-image-gen`: insert a generated image into the selected AI image holder.
-- `cowart:cowart-image-edit`: generate a revised image from a user-provided Cowart annotation screenshot.
+- `cowart:cowart-image-gen`: sequentially process current-page AI image holder requests, or fill a selected holder.
+- `cowart:cowart-image-edit`: generate revised images from selected structured Cowart annotations; screenshots are a fallback.
 - `cowart:cowart-sketch-to-image`: turn a canvas sketch into a finished image (using it as a structure reference) placed beside the sketch.
 
 ## Local Development

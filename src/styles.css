@@ -238,6 +238,7 @@ body {
 /* Custom AI image holder shape */
 .cowart-ai-image {
   position: relative;
+  container-type: inline-size;
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -248,13 +249,19 @@ body {
 
 .cowart-ai-image--empty,
 .cowart-ai-image--requested,
-.cowart-ai-image--generating {
+.cowart-ai-image--generating,
+.cowart-ai-image--failed {
   background: repeating-linear-gradient(45deg, #f7fbfe, #f7fbfe 12px, #eef6fb 12px, #eef6fb 24px);
   box-shadow: inset 0 0 0 2px rgba(37, 191, 239, 0.45);
 }
 
 .cowart-ai-image--requested {
   box-shadow: inset 0 0 0 2px rgba(255, 159, 10, 0.7);
+}
+
+.cowart-ai-image--failed {
+  background: repeating-linear-gradient(45deg, #fff8f7, #fff8f7 12px, #fdecea 12px, #fdecea 24px);
+  box-shadow: inset 0 0 0 2px rgba(214, 71, 56, 0.7);
 }
 
 .cowart-ai-image__img {
@@ -272,9 +279,51 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 12px;
+  min-width: 0;
+  padding: 42px 12px 54px;
   text-align: center;
   color: #1f2430;
+}
+
+.cowart-ai-image__status-chip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 9px;
+  overflow: hidden;
+  color: #1f2430;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(31, 36, 48, 0.14);
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(31, 36, 48, 0.12);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cowart-ai-image--requested .cowart-ai-image__status-chip {
+  color: #7a4b00;
+  border-color: rgba(255, 159, 10, 0.36);
+  background: rgba(255, 247, 232, 0.96);
+}
+
+.cowart-ai-image--generating .cowart-ai-image__status-chip {
+  color: #087596;
+  border-color: rgba(37, 191, 239, 0.34);
+  background: rgba(232, 247, 253, 0.96);
+}
+
+.cowart-ai-image--failed .cowart-ai-image__status-chip {
+  color: #9f2d20;
+  border-color: rgba(214, 71, 56, 0.32);
+  background: rgba(255, 241, 239, 0.96);
 }
 
 .cowart-ai-image__label {
@@ -286,9 +335,11 @@ body {
 .cowart-ai-image__state {
   font-size: 12px;
   color: #4a5568;
+  line-height: 1.25;
 }
 
 .cowart-ai-image__prompt {
+  width: 100%;
   font-size: 12px;
   color: #1f2430;
   max-width: 90%;
@@ -301,21 +352,45 @@ body {
 .cowart-ai-image__hint {
   font-size: 11px;
   color: #8a93a3;
+  line-height: 1.25;
+}
+
+.cowart-ai-image__error {
+  width: 100%;
+  max-width: 92%;
+  display: -webkit-box;
+  overflow: hidden;
+  color: #9f2d20;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .cowart-ai-image__actions {
   position: absolute;
   right: 6px;
   bottom: 6px;
+  z-index: 1;
   display: flex;
+  max-width: calc(100% - 12px);
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
   opacity: 0;
+  pointer-events: all;
   transition: opacity 0.12s ease;
 }
 
 .cowart-ai-image:hover .cowart-ai-image__actions,
+.cowart-ai-image:focus-within .cowart-ai-image__actions,
 .cowart-ai-image--empty .cowart-ai-image__actions,
-.cowart-ai-image--requested .cowart-ai-image__actions {
+.cowart-ai-image--requested .cowart-ai-image__actions,
+.cowart-ai-image--generating .cowart-ai-image__actions,
+.cowart-ai-image--failed .cowart-ai-image__actions,
+.cowart-ai-image--filled .cowart-ai-image__actions {
   opacity: 1;
 }
 
@@ -323,20 +398,30 @@ body {
   appearance: none;
   border: none;
   cursor: pointer;
-  padding: 4px 10px;
+  min-width: 44px;
+  min-height: 32px;
+  padding: 6px 10px;
+  overflow: hidden;
   font-size: 11px;
   font-weight: 600;
+  line-height: 1;
   color: #fff;
   background: rgba(37, 191, 239, 0.95);
   border-radius: 999px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cowart-ai-image__btn:hover {
   background: #1aa9d6;
 }
 
+.cowart-ai-image__btn:focus-visible {
+  outline: 2px solid #1f2430;
+  outline-offset: 2px;
+}
+
 .cowart-ai-image__btn--ghost {
-  padding: 4px 8px;
   color: #1f2430;
   background: rgba(255, 255, 255, 0.95);
   box-shadow: inset 0 0 0 1px rgba(31, 36, 48, 0.15);
@@ -345,6 +430,14 @@ body {
 .cowart-ai-image__btn--ghost:hover {
   background: #fff;
   color: #1aa9d6;
+}
+
+.cowart-ai-image__btn--danger {
+  background: rgba(214, 71, 56, 0.96);
+}
+
+.cowart-ai-image__btn--danger:hover {
+  background: #b93627;
 }
 
 .cowart-ai-image__editor {
@@ -363,17 +456,6 @@ body {
   z-index: 2;
 }
 
-.cowart-ai-image__badge {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #ff9f0a;
-  box-shadow: 0 0 0 4px rgba(255, 159, 10, 0.25);
-}
-
 .cowart-ai-image__spinner {
   width: 26px;
   height: 26px;
@@ -386,5 +468,28 @@ body {
 @keyframes cowart-ai-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (hover: none) {
+  .cowart-ai-image__actions {
+    opacity: 1;
+  }
+}
+
+@container (max-width: 210px) {
+  .cowart-ai-image__placeholder {
+    align-items: flex-start;
+    padding: 40px 8px 82px;
+    text-align: left;
+  }
+
+  .cowart-ai-image__actions {
+    left: 6px;
+    justify-content: flex-start;
+  }
+
+  .cowart-ai-image__btn {
+    max-width: 100%;
   }
 }

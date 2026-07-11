@@ -1,4 +1,4 @@
 interface:
   display_name: "Cowart Sketch to Image"
   short_description: "Turn a canvas sketch into a polished image"
-  default_prompt: "Use $cowart:cowart-sketch-to-image to turn my selected Cowart sketch into a polished image and place it beside the sketch."
+  default_prompt: "Use $cowart:cowart-sketch-to-image to turn my selected Cowart sketch into a polished image, placing it beside the sketch or filling the selected current holder with replace_cowart_image."

@@ -1,7 +1,7 @@
 {
   "name": "cowart",
   "version": "0.1.2",
-  "description": "A local infinite canvas for Codex, powered by tldraw and built for visual thinking, image generation, and annotation-driven edits.",
+  "description": "A local infinite canvas for Codex, powered by tldraw and built for structured annotations, current-page image request queues, and canvas-native generation workflows.",
   "author": {
     "name": "ZHONG XIN",
     "email": "zhongxin123456@gmail.com",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Cowart",
     "shortDescription": "Create, annotate, and generate on a local infinite canvas in Codex.",
-    "longDescription": "Cowart brings a tldraw-powered infinite canvas into Codex for visual planning and creative iteration. Open a local canvas for the active project, sketch ideas, place AI image holders, generate images into selected slots, and turn annotated screenshots into revised image outputs while keeping canvas data in the user's project workspace.",
+    "longDescription": "Cowart brings a tldraw-powered infinite canvas into Codex for visual planning and creative iteration. Agents can read selected or current-page canvas structure, consume structured annotations with get_cowart_annotations, process the current page's requested AI image holder queue with get_cowart_requests, and fill or revise images while keeping canvas data in the user's project workspace. Screenshot export remains available when structured canvas context is not enough.",
     "developerName": "ZHONG XIN",
     "category": "Productivity",
     "websiteURL": "https://www.jiqiren.ai",
@@ -35,9 +35,9 @@
       "Project-local persistence"
     ],
     "defaultPrompt": [
-      "Open the Cowart canvas for this project.",
-      "Use my Cowart annotation screenshot to generate a clean revised image beside the original.",
-      "Generate a new image into the selected Cowart AI image holder."
+      "Open the Cowart canvas for this project and inspect the selected or current-page structured annotations.",
+      "Process the current page's requested Cowart AI image holder queue and fill each requested holder from its prompt and references.",
+      "Revise images from Cowart's structured annotations first, using screenshots only as fallback context when needed."
     ]
   }
 }

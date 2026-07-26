@@ -12,6 +12,7 @@ import { encodeCanonicalMaskPng } from "../shared/cowart-segment-mask.mjs";
 
 export const ROOT = resolve(".");
 export const MCP = join(ROOT, "mcp", "server.mjs");
+const VITE = join(ROOT, "node_modules", "vite", "bin", "vite.js");
 export const PNG_1X1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
@@ -124,7 +125,7 @@ export async function withViteHarness(fn, options = {}) {
     const allocatePort = options.allocatePort ?? (async () => freePort());
     const port = await allocatePort({ canvasDir });
     const cowartUrl = `http://127.0.0.1:${port}`;
-    child = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port)], {
+    child = spawn(process.execPath, [VITE, "--host", "127.0.0.1", "--port", String(port)], {
       cwd: ROOT,
       env: { ...process.env, COWART_CANVAS_DIR: canvasDir },
       stdio: ["ignore", "pipe", "pipe"],

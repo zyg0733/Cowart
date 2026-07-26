@@ -8,6 +8,7 @@ import net from "node:net";
 import test from "node:test";
 
 const ROOT = resolve(".");
+const VITE = join(ROOT, "node_modules", "vite", "bin", "vite.js");
 
 async function freePort() {
   const server = net.createServer();
@@ -35,7 +36,7 @@ async function runCommand(command, args) {
 async function startPreview(canvasDir) {
   const port = await freePort();
   const cowartUrl = `http://127.0.0.1:${port}`;
-  const child = spawn("npm", ["run", "preview", "--", "--host", "127.0.0.1", "--port", String(port)], {
+  const child = spawn(process.execPath, [VITE, "preview", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: ROOT,
     env: { ...process.env, COWART_CANVAS_DIR: canvasDir },
     stdio: ["ignore", "pipe", "pipe"],

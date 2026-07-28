@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -113,7 +115,7 @@ test("Given a loopback Sidecar When MCP requests candidates Then only explicit p
 
 test("Given a Sidecar that stalls after response headers When the deadline expires Then the body read is cancelled as a timeout", async () => {
   const token = "sidecar-timeout-token-abcdefghijklmnopqrstuvwxyz";
-  const tokenFile = `/private/tmp/cowart-sidecar-timeout-${process.pid}`;
+  const tokenFile = join(tmpdir(), `cowart-sidecar-timeout-${process.pid}`);
   await writeFile(tokenFile, token, { mode: 0o600 });
   await chmod(tokenFile, 0o600);
   const server = createServer((_request, response) => {

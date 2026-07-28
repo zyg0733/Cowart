@@ -93,6 +93,20 @@ test("Given accessibility requirements When exported test IDs are read Then the 
     accept: "object-edit.accept",
     cancel: "object-edit.cancel",
     retry: "object-edit.retry",
+    brushAdd: "object-edit.brush-add",
+    brushRemove: "object-edit.brush-remove",
+    brushSize: "object-edit.brush-size",
+    undo: "object-edit.undo",
+    redo: "object-edit.redo",
+    reset: "object-edit.reset",
+    previousCandidate: "object-edit.previous-candidate",
+    nextCandidate: "object-edit.next-candidate",
+    objectList: "object-edit.object-list",
+    lineage: "object-edit.lineage",
+    modify: "object-edit.modify",
+    replace: "object-edit.replace",
+    remove: "object-edit.remove",
+    variants: "object-edit.variants",
   });
 });
 

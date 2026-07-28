@@ -5,6 +5,8 @@ import { codedError } from "./object-aware-errors.mjs";
 import { findPageIdForShape, getRecord, loadCanvasSnapshot, persistRecords, readSelectionState, readViewState } from "./canvas-client.mjs";
 import { chooseIndex, choosePlacement, firstSelectedShapeId } from "./geometry.mjs";
 import { localAssetFileForShape } from "./object-aware-deps.mjs";
+import { trustedObjectAction } from "./object-action-meta.mjs";
+import { sourceCondition } from "./object-aware-deps.mjs";
 import {
   archiveRequest,
   assertExpectedRequest,
@@ -15,12 +17,13 @@ import {
 } from "./request-lifecycle.mjs";
 import { finiteNumber, nonEmptyString, resolveCanvasDir, sanitizeIdPart, uniqueRecordId } from "./paths.mjs";
 
-export async function createCowartImageHolder(args = {}) {
+export async function createCowartImageHolder(args = {}, deps) {
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
   const { selection } = await readSelectionState(args);
   const viewState = await readViewState(args);
-  const anchorShapeId = nonEmptyString(args.anchorShapeId) || firstSelectedShapeId(selection);
+  const objectAction = await trustedObjectAction(args, args.objectAction, deps);
+  const anchorShapeId = nonEmptyString(args.anchorShapeId) || objectAction?.sourceShapeId || firstSelectedShapeId(selection);
   const anchorShape = anchorShapeId ? getRecord(store, anchorShapeId, "anchor shape") : null;
   const pageId = nonEmptyString(args.pageId) || (anchorShape ? findPageIdForShape(store, anchorShape.id) : null) || nonEmptyString(viewState?.currentPageId) || Object.values(store).find((record) => record?.typeName === "page")?.id;
   if (!pageId || !store[pageId]) throw new Error("Could not determine target pageId.");
@@ -32,14 +35,34 @@ export async function createCowartImageHolder(args = {}) {
   const { x, y } = choosePlacement({ store, pageId, parentId: pageId, anchorShape, width, height, margin, placement });
   const name = nonEmptyString(args.name) || AI_IMAGE_HOLDER_LABEL;
   const shapeId = uniqueRecordId(store, "shape", sanitizeIdPart(name, "ai-image"));
+  const meta = { cowartAiImageHolder: true, cowartAiImageHolderVersion: 1, ...(args.shapeMeta && typeof args.shapeMeta === "object" ? args.shapeMeta : {}) };
+  if (objectAction) {
+    meta.cowartObjectAction = objectAction;
+    meta.cowartRequest = makeCowartRequest(meta, { ...args, requestKind: "object_action", objectAction });
+  }
   const shapeRecord = {
     x, y, rotation: 0, isLocked: false, opacity: 1, id: shapeId, type: COWART_AI_IMAGE_SHAPE, parentId: pageId,
     index: chooseIndex(store, pageId), typeName: "shape",
-    meta: { cowartAiImageHolder: true, cowartAiImageHolderVersion: 1, ...(args.shapeMeta && typeof args.shapeMeta === "object" ? args.shapeMeta : {}) },
-    props: { w: width, h: height, name, prompt: nonEmptyString(args.prompt) ?? "", status: "empty", assetId: null },
+    meta,
+    props: { w: width, h: height, name, prompt: objectAction?.prompt || nonEmptyString(args.prompt) || "", status: objectAction ? "requested" : "empty", assetId: null },
   };
-  if (!args.dryRun) await persistRecords(cowartUrl, store, snapshot, { put: [shapeRecord] });
-  return { cowartUrl, pageId, parentId: pageId, shapeId, index: shapeRecord.index, bounds: { x, y, w: width, h: height }, dryRun: Boolean(args.dryRun) };
+  if (!args.dryRun) {
+    await persistRecords(cowartUrl, store, snapshot, {
+      put: [shapeRecord],
+      conditions: objectAction ? [sourceCondition({
+        pageId: objectAction.sourcePageId,
+        shapeId: objectAction.sourceShapeId,
+        assetId: objectAction.sourceAssetId,
+        assetSha256: objectAction.sourceSha256,
+        width: objectAction.sourceWidth,
+        height: objectAction.sourceHeight,
+      })] : [],
+    });
+  }
+  return {
+    cowartUrl, pageId, parentId: pageId, shapeId, index: shapeRecord.index, bounds: { x, y, w: width, h: height },
+    status: shapeRecord.props.status, request: shapeRecord.meta.cowartRequest ?? null, objectAction, dryRun: Boolean(args.dryRun),
+  };
 }
 
 export async function updateCowartHolder(args = {}) {
@@ -87,7 +110,12 @@ function updateHolderStatus({ args, holder, props, meta }) {
   if (nextStatus === "requested") {
     const previous = archiveRequest(activeRequest, { supersededAt: new Date().toISOString() });
     if (previous) meta.cowartLastRequest = previous;
-    meta.cowartRequest = makeCowartRequest(meta, args);
+    meta.cowartRequest = makeCowartRequest(meta, {
+      ...args,
+      objectAction: args.objectAction ?? meta.cowartObjectAction,
+      variant: args.variant ?? meta.cowartVariant,
+      requestKind: args.requestKind ?? (meta.cowartVariant ? "variant" : meta.cowartObjectAction ? "object_action" : undefined),
+    });
   } else if (nextStatus === "generating" && activeRequest) {
     meta.cowartRequest = { ...activeRequest, startedAt: nonEmptyString(activeRequest.startedAt) || new Date().toISOString() };
   } else if (nextStatus === "failed") {

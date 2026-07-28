@@ -62,11 +62,15 @@ export function requestAttempt(meta) {
 }
 
 export function makeCowartRequest(meta, args = {}) {
-  return {
+  const request = {
     id: nonEmptyString(args.requestId) || newRequestId(),
     requestedAt: nonEmptyString(args.requestedAt) || new Date().toISOString(),
     attempt: requestAttempt(meta) + 1,
+    kind: nonEmptyString(args.requestKind) || (args.objectAction ? "object_action" : args.variant ? "variant" : "image_generation"),
   };
+  if (args.objectAction && typeof args.objectAction === "object") request.objectAction = args.objectAction;
+  if (args.variant && typeof args.variant === "object") request.variant = args.variant;
+  return request;
 }
 
 export function archiveRequest(request, fields = {}) {

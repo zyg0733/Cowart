@@ -4,6 +4,7 @@ import {
   idempotentWriteAnnotations,
   imageInputProperties,
   objectSchema,
+  preserveOutsideProperty,
   projectDirProperty,
   writeAnnotations,
 } from "./tool-schema-common.mjs";
@@ -41,6 +42,7 @@ export const insertImageTool = {
     expectedSourceAssetHash: { type: "string", description: "Require the source image asset bytes to still match this SHA-256 before writing." },
     expectedSourceSha256: { type: "string", description: "Alias for expectedSourceAssetHash." },
     objectEdit: { type: "object", description: "Object-edit provenance stored on the inserted shape as meta.cowartObjectEdit." },
+    preserveOutside: preserveOutsideProperty,
     shapeMeta: { type: "object", description: "Additional tldraw shape metadata." },
     assetMeta: { type: "object", description: "Additional tldraw asset metadata." },
     dryRun: { type: "boolean", description: "Calculate insertion without copying or saving." },
@@ -71,6 +73,7 @@ export const replaceImageTool = {
     expectedSourceAssetHash: { type: "string", description: "Require the current target source asset bytes to still match this SHA-256 before replacing." },
     expectedSourceSha256: { type: "string", description: "Alias for expectedSourceAssetHash." },
     objectEdit: { type: "object", description: "Object-edit provenance stored on the updated shape as meta.cowartObjectEdit." },
+    preserveOutside: preserveOutsideProperty,
     expectedRequestId: { type: "string", description: "For cowart-ai-image holders, require the active meta.cowartRequest.id to match before filling." },
     dryRun: { type: "boolean", description: "Calculate the replacement without copying or saving." },
   }),

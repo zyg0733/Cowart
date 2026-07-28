@@ -5,6 +5,7 @@ import { COWART_AI_IMAGE_SHAPE } from "./constants.mjs";
 import { findPageIdForShape, getRecord, loadCanvasSnapshot, persistRecords, readSelectionState } from "./canvas-client.mjs";
 import { firstSelectedShapeId, getPageShapes } from "./geometry.mjs";
 import { resolveImageSource, writeResolvedImage } from "./image-io.mjs";
+import { protectResolvedImage } from "./protected-image.mjs";
 import {
   finiteNumber,
   isSafeChildPath,
@@ -28,7 +29,9 @@ import {
 } from "./object-aware-deps.mjs";
 
 export async function replaceCowartImage(args = {}, deps) {
-  const source = await resolveImageSource(args);
+  let source = await resolveImageSource(args);
+  const protectedImage = await protectResolvedImage(args, source, deps);
+  source = protectedImage.image;
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
   const { selection } = await readSelectionState(args);
@@ -48,8 +51,8 @@ export async function replaceCowartImage(args = {}, deps) {
   if (isHolder) assertExpectedRequest(targetShape, args.expectedRequestId, "replace holder image");
 
   const preconditionHash = sourceHashArg(args);
-  const preconditionShape = preconditionHash ? resolveImageLikeShape(store, targetShape, { label: "Writeback source" }) : null;
-  const sourcePrecondition = preconditionShape ? await assertSourcePrecondition(store, args, preconditionShape, preconditionHash, deps) : null;
+  const preconditionShape = !protectedImage.protection && preconditionHash ? resolveImageLikeShape(store, targetShape, { label: "Writeback source" }) : null;
+  const sourcePrecondition = protectedImage.protection?.source ?? (preconditionShape ? await assertSourcePrecondition(store, args, preconditionShape, preconditionHash, deps) : null);
   const imageSize = source.dimensions;
   const width = finiteNumber(args.displayWidth, finiteNumber(targetShape.props?.w, imageSize?.width ?? 1));
   const height = finiteNumber(args.displayHeight, finiteNumber(targetShape.props?.h, imageSize?.height ?? 1));
@@ -90,7 +93,7 @@ export async function replaceCowartImage(args = {}, deps) {
   return {
     cowartUrl, pageId, shapeId: targetShape.id, assetId, previousAssetId: oldAssetId ?? null, removedPreviousAsset: Boolean(removeOldAsset),
     removedPreviousAssetFile: Boolean(oldAssetFile), assetFile: filePath, assetUrl: assetRecord.props.src, imageSize: naturalSize,
-    bounds: { w: width, h: height }, dryRun: Boolean(args.dryRun),
+    bounds: { w: width, h: height }, preserveOutside: protectedImage.protection, dryRun: Boolean(args.dryRun),
   };
 }
 

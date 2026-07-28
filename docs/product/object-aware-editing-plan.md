@@ -1,27 +1,29 @@
-# Cowart Phase 8：对象感知编辑与自动分割方案
+# Cowart Phase 8：对象感知编辑、对象动作与自动分割方案
 
-> 日期：2026-07-19。状态：Phase 8 核心已落地；扩展能力仍按阶段推进。
+> 日期：2026-07-27。状态：Phase 8.1 core 与 Phase 8.2 对象动作已落地；Sidecar 和 AI 场景分解仍按阶段推进。
 
 ## 1. 当前交付边界
 
-Phase 8 core 已经交付“人在回路”的对象选择和 agent 消费流程：
+Phase 8.1-8.2 已交付“人在回路”的对象选择、校正、动作和 agent 消费流程：
 
 1. 用户在画布中选择一张页面本地图片或 filled `cowart-ai-image` holder。
 2. 用户打开“对象”工具，用点击或粗略 scribble 指向目标对象。
 3. 浏览器本机 Worker 加载 `MediaPipe Interactive Segmenter`，生成候选蒙版。
-4. 用户预览、取消或确认。只有确认后的记录写入 Segment Store。
-5. Agent 通过 `get_cowart_selection` 或 `get_cowart_canvas` 发现 `confirmedSegments`。
-6. Agent 可用 `refine_cowart_segment` 做 expand / contract / feather 形态学校正。
-7. Agent 调用 `make_cowart_mask({ segmentId })` 得到图像编辑蒙版。
-8. Agent 生成修订图，并用 `insert_cowart_image` 放到源图旁边，写入 `meta.cowartObjectEdit` provenance。
+4. 用户可切换候选，用添加/移除笔刷、画笔大小、撤销、重做和重置校正候选；这些操作只修改候选蒙版，不冒充模型重新推理。
+5. 用户预览、取消或确认。只有确认后的记录写入 Segment Store；已确认对象可继续发布不可变 child segment。
+6. Agent 通过 `get_cowart_selection` 或 `get_cowart_canvas` 发现 `confirmedSegments`。
+7. `extract_cowart_object` 用 `sharp` 从源图提取真实透明 PNG；修改、替换、移除创建 AI holder 请求。
+8. Variant Grid 默认四个、最多六个 holder，继续使用 FIFO 队列，winner 写入共享 metadata，非 winner 保留。
+9. Agent 生成修订图，并用 `preserveOutside` 在本地保护性合成，写入 `meta.cowartObjectEdit` provenance。
 
-当前版本不交付 GPU sidecar、text segmentation、automatic agent segmentation、full layer recovery、生产级 C2PA 或 video。它们是 deferred work。
+当前版本不交付 GPU sidecar、text segmentation、automatic agent segmentation、AI scene decomposition、full layer recovery、生产级 C2PA 或 video。它们是 deferred work。
 
 ## 2. 实现事实
 
-- MCP server：`0.5.0`。
-- 公开 MCP 工具数：`14`。
-- 对象相关工具：`segment_cowart_image`、`refine_cowart_segment`、`make_cowart_mask({ segmentId })`。
+- MCP server：`0.6.0`。
+- 公开 MCP 工具数：`17`。
+- 对象相关工具：`segment_cowart_image`、`refine_cowart_segment`、`make_cowart_mask({ segmentId })`、`extract_cowart_object`、`create_cowart_variant_grid`、`select_cowart_variant`。
+- 确定性图像处理：`sharp@0.35.0`。
 - 浏览器模型：`MediaPipe Interactive Segmenter`，`@mediapipe/tasks-vision@0.10.35`。
 - WASM URL：`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm`。
 - 模型 URL：`https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite`。
@@ -37,10 +39,10 @@ Segment Store 是已确认对象蒙版的唯一真源。候选只在浏览器内
 canvas/pages/<page-id>/segments/<segment-id>/
   mask.png
   preview.png
-  segment.json
+  manifest.json
 ```
 
-`segment.json` 记录：
+`manifest.json` 记录：
 
 - source：page id、shape id、asset id、asset SHA-256、自然尺寸；
 - mask：文件名、SHA-256、bbox、area；
@@ -64,9 +66,9 @@ canvas/pages/<page-id>/segments/<segment-id>/
 
 接受且只接受 `region`、`regionShapeId`、`segmentId` 三者之一。`segmentId` 路径会读取 Segment Store，验证 source identity，把选择权重转换为图像编辑 alpha：`editAlpha = 255 - selectionWeight`。返回 source image、mask file、mask hash、source hash 和 segment id。
 
-### 写回 provenance
+### 透明提取、保护性写回与 provenance
 
-对象编辑默认用 `insert_cowart_image` 创建旁路新版本。caller 只传安全字段，例如 segment id、edit mask hash、operation、prompt、provider、model 和时间。Cowart 从已验证 Segment Store 派生受保护 source identity，不允许 caller 覆盖 source shape、asset 或 source hash。
+`extract_cowart_object` 只使用 Segment Store 权威蒙版和源图像素，输出标记为 `synthetic: false`。生成式对象动作标记为 synthetic；caller 只传安全字段。`preserveOutside` 从已验证 segment 推导 source identity，并保证 mask 值为 0 的解码 RGBA 字节与源图一致，不允许 caller 覆盖 source shape、asset、hash 或 mask hash。
 
 ## 5. 隐私、安全和限制
 
@@ -74,7 +76,7 @@ canvas/pages/<page-id>/segments/<segment-id>/
 - 首次分割需要下载固定 WASM 和模型；tldraw 运行时也可能从 `cdn.tldraw.com` 读取前端资源。离线时真实对象选择会失败；离线错误场景应显式测试。
 - 浏览器必须支持 module Worker、OffscreenCanvas、WebGL2 和 Web Crypto；缺失时显示 unsupported。
 - Segment Store 路径限制在页面目录内，并执行 child-path 检查。
-- 模型和图像编辑 mask 是 guidance。除非后处理执行 `preserveOutside` 合成，否则不承诺蒙版外逐像素不变。
+- 模型和图像编辑 mask 是 guidance。只有后处理执行 `preserveOutside` 的结果才承诺蒙版外解码 RGBA 字节不变。
 - 日志和 provenance 不保存源图字节、密钥或完整远端响应。
 
 ## 6. 真实证据和未跑事项
@@ -93,9 +95,9 @@ canvas/pages/<page-id>/segments/<segment-id>/
 
 ## 7. 后续阶段
 
-### Phase 8.2：校正和对象动作
+### Phase 8.2：校正和对象动作（已落地）
 
-继续完善添加/移除点、笔刷校正、候选切换、修改/移除/替换/提取动作，以及可选 `preserveOutside` 合成。
+已落地笔刷校正、候选切换、修改/移除/替换/提取、`preserveOutside`、Variant Grid 和只读 lineage 时间线。
 
 ### Phase 8.3：本地 provider
 

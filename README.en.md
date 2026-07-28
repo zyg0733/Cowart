@@ -10,10 +10,12 @@ Cowart is a local infinite-canvas plugin for Codex. It brings a tldraw-powered c
 - Persist canvas pages, image assets, and confirmed object segments in the active project directory.
 - Create AI image holders on the canvas; clicking generate creates a current-page request queue that Codex processes sequentially, with queued / generating / failed / filled lifecycle states.
 - Read selected annotations, selected target images, or confirmed object segments as structured edit intent, then let Codex generate clean revised images beside the original. Screenshots remain a fallback when structured canvas data is unavailable.
-- Object Selection: select one local image, switch to the Object tool, then click or drag over the object. Cowart runs MediaPipe Interactive Segmenter with browser-local processing, previews the mask, accepts with Enter, and cancels with Escape. Confirmed segments rehydrate after reload.
+- Object Selection: select one local image, switch to the Object tool, then click or drag over the object. Cowart runs MediaPipe Interactive Segmenter with browser-local processing. Correct candidates with add/remove brushes, brush size, undo, redo, reset, and candidate switching; confirmed segments rehydrate and can publish immutable child revisions.
+- Object actions: `sharp@0.35.0` extracts real transparent PNG layers locally. Modify, replace, and remove create segment-backed AI holder requests. Variant Grid defaults to four holders, caps at six, stays FIFO, and retains non-winners.
+- Protected compositing: `insert_cowart_image` and `replace_cowart_image` support `preserveOutside`, keeping decoded RGBA bytes outside the mask identical to the source.
 - Browser-local processing: the source image is fetched only from localhost. The source image is never uploaded by Cowart. First use downloads pinned model and WASM assets; the tldraw runtime may also load frontend assets from `cdn.tldraw.com`.
-- Use Cowart MCP tools to perceive and act on the canvas: `get_cowart_selection`, `insert_cowart_image`, `get_cowart_canvas`, `get_cowart_annotations`, `create_cowart_image_holder`, `replace_cowart_image`, `export_cowart_view`, `add_cowart_shapes`, `make_cowart_mask`, `update_cowart_holder`, `get_cowart_references`, `get_cowart_requests`, `segment_cowart_image`, `refine_cowart_segment`.
-- MCP server version: `0.5.0`; current public tool count: `14`.
+- Use Cowart MCP tools to perceive and act on the canvas: `get_cowart_selection`, `insert_cowart_image`, `get_cowart_canvas`, `get_cowart_annotations`, `create_cowart_image_holder`, `replace_cowart_image`, `export_cowart_view`, `add_cowart_shapes`, `make_cowart_mask`, `update_cowart_holder`, `get_cowart_references`, `get_cowart_requests`, `segment_cowart_image`, `refine_cowart_segment`, `extract_cowart_object`, `create_cowart_variant_grid`, `select_cowart_variant`.
+- MCP server version: `0.6.0`; current public tool count: `17`.
 
 ## Installation
 
@@ -101,16 +103,17 @@ Codex reads `get_cowart_selection`, then resolves annotations through `get_cowar
 2. Click the Object tool in the bottom toolbar.
 3. Click the object, or drag a rough scribble over it.
 4. Wait for the browser-local mask preview.
-5. Press Enter or click Accept to confirm; press Escape or click Cancel to cancel.
-6. Ask Codex to use the confirmed segment:
+5. Keep Select active for more candidates, or use Add / Remove brushes with brush size, undo, redo, and reset.
+6. Press Enter or click Accept to confirm; press Escape or click Cancel to cancel.
+7. Ask Codex to use the confirmed segment:
 
 ```text
 Use the confirmed Cowart object segment on the selected image to edit that object and place a revised version beside it.
 ```
 
-The agent workflow is: discover `confirmedSegments` with `get_cowart_selection` or `get_cowart_canvas`, optionally call `refine_cowart_segment` to expand, contract, or feather the segment, call `make_cowart_mask({ segmentId })` to materialize the edit mask, then use `insert_cowart_image` to place a neighboring revision with `meta.cowartObjectEdit` provenance. `segment_cowart_image` returns `browser_interaction_required` when no real server provider is configured; it does not synthesize segment success.
+The agent workflow is: discover `confirmedSegments` with `get_cowart_selection` or `get_cowart_canvas`; use `extract_cowart_object` for a source-derived transparent layer; queue generative work with `create_cowart_image_holder.objectAction` or `create_cowart_variant_grid`; write results through `preserveOutside`; and record a winner with `select_cowart_variant`. `get_cowart_canvas.lineageTimeline` is a read-only projection of sources, actions, variants, and winners. `segment_cowart_image` returns `browser_interaction_required` when no real server provider is configured.
 
-The mask is guidance for the image model, not a pixel lock. Only a separate `preserveOutside` compositing step can promise unchanged pixels outside the mask.
+The mask remains guidance for the image model. With `preserveOutside`, Cowart locally decodes and deterministically composites source and candidate pixels, guaranteeing identical RGBA bytes wherever the selection mask is zero.
 
 ## Model, Cache, And Capability Requirements
 
@@ -131,10 +134,10 @@ Segment Store is the source of truth for confirmed object masks. Candidate previ
 canvas/pages/<page-id>/segments/<segment-id>/
   mask.png
   preview.png
-  segment.json
+  manifest.json
 ```
 
-`segment.json` records the source shape, asset id, asset SHA-256, natural size, selection mode, provider, mask hash, bbox, area, and `parentSegmentId`. Refinement creates an immutable child segment. If source asset bytes change, the old segment becomes stale; mask generation and writeback reject it through source hash checks.
+`manifest.json` records the source shape, asset id, asset SHA-256, natural size, selection mode, provider, mask hash, bbox, area, and `parentSegmentId`. Refinement creates an immutable child segment. If source asset bytes change, the old segment becomes stale; mask generation and writeback reject it through source hash checks.
 
 ## Local Development
 

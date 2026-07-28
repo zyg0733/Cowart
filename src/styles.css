@@ -534,6 +534,12 @@ body {
   mix-blend-mode: multiply;
 }
 
+.cowart-object-edit-preview--brush {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+
 .cowart-object-edit-preview::after {
   content: "";
   position: absolute;
@@ -613,6 +619,113 @@ body {
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
+}
+
+.cowart-object-edit-object-list {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.cowart-object-edit-object,
+.cowart-object-edit-mode button,
+.cowart-object-edit-history button,
+.cowart-object-edit-icon-btn {
+  min-height: 32px;
+  padding: 5px 8px;
+  color: #344054;
+  background: #fff;
+  border: 1px solid rgba(31, 36, 48, 0.16);
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.cowart-object-edit-object[aria-pressed="true"],
+.cowart-object-edit-mode button[aria-pressed="true"] {
+  color: #065f73;
+  background: #e6f8fc;
+  border-color: #25bfef;
+}
+
+.cowart-object-edit-lineage {
+  display: grid;
+  max-height: 92px;
+  gap: 3px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  overflow: auto;
+  color: #475467;
+  font-size: 11px;
+}
+
+.cowart-object-edit-corrections {
+  display: grid;
+  gap: 6px;
+  padding-block: 6px;
+  border-block: 1px solid rgba(31, 36, 48, 0.1);
+}
+
+.cowart-object-edit-candidate-nav,
+.cowart-object-edit-mode,
+.cowart-object-edit-history,
+.cowart-object-edit-object-actions,
+.cowart-object-edit-brush-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cowart-object-edit-object-actions {
+  flex-wrap: wrap;
+}
+
+.cowart-object-edit-object-actions button {
+  min-height: 32px;
+  padding: 5px 8px;
+  color: #344054;
+  background: #fff;
+  border: 1px solid rgba(31, 36, 48, 0.16);
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.cowart-object-edit-candidate-nav {
+  justify-content: center;
+}
+
+.cowart-object-edit-icon-btn {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.cowart-object-edit-brush-size span {
+  min-width: 38px;
+}
+
+.cowart-object-edit-brush-size input {
+  min-width: 0;
+  flex: 1;
+}
+
+.cowart-object-edit-brush-size output {
+  width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cowart-object-edit-object:disabled,
+.cowart-object-edit-mode button:disabled,
+.cowart-object-edit-history button:disabled,
+.cowart-object-edit-icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .cowart-object-edit-error {

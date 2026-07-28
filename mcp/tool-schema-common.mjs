@@ -32,6 +32,20 @@ export const imageInputProperties = {
   mimeType: { type: "string", description: "MIME type for imageBase64 (default image/png); also used to pick the saved file extension." },
 };
 
+export const preserveOutsideProperty = {
+  oneOf: [
+    { type: "boolean" },
+    {
+      type: "object",
+      properties: {
+        segmentId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  ],
+  description: "Deterministically preserve decoded source RGBA pixels outside a confirmed Segment Store mask. true infers segmentId from objectEdit.segmentId.",
+};
+
 export const holderStatuses = ["empty", "requested", "generating", "failed", "filled"];
 
 export function objectSchema(properties, extra = {}) {

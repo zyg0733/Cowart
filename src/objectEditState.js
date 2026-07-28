@@ -9,7 +9,21 @@ export const OBJECT_EDIT_TEST_IDS = {
   error: 'object-edit.error',
   accept: 'object-edit.accept',
   cancel: 'object-edit.cancel',
-  retry: 'object-edit.retry'
+  retry: 'object-edit.retry',
+  brushAdd: 'object-edit.brush-add',
+  brushRemove: 'object-edit.brush-remove',
+  brushSize: 'object-edit.brush-size',
+  undo: 'object-edit.undo',
+  redo: 'object-edit.redo',
+  reset: 'object-edit.reset',
+  previousCandidate: 'object-edit.previous-candidate',
+  nextCandidate: 'object-edit.next-candidate',
+  objectList: 'object-edit.object-list',
+  lineage: 'object-edit.lineage',
+  modify: 'object-edit.modify',
+  replace: 'object-edit.replace',
+  remove: 'object-edit.remove',
+  variants: 'object-edit.variants'
 }
 
 export const OBJECT_EDIT_COPY = {
@@ -138,4 +152,20 @@ export async function fetchLocalImageBytes(src, signal) {
   const response = await fetch(src, { signal })
   if (!response.ok) throw new Error(`Failed to fetch local source image: ${response.status}`)
   return new Uint8Array(await response.arrayBuffer())
+}
+
+export async function decodeSelectionMask(maskPng, width, height) {
+  const bitmap = await createImageBitmap(new Blob([maskPng], { type: 'image/png' }))
+  try {
+    if (bitmap.width !== width || bitmap.height !== height) throw new Error('Segment mask dimensions changed.')
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    context.drawImage(bitmap, 0, 0)
+    const rgba = context.getImageData(0, 0, width, height).data
+    const pixels = new Uint8Array(width * height)
+    for (let index = 0; index < pixels.length; index += 1) pixels[index] = rgba[index * 4]
+    return pixels
+  } finally {
+    bitmap.close?.()
+  }
 }

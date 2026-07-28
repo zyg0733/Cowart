@@ -12,6 +12,7 @@ export const EVIDENCE = join(ROOT, ".omo/evidence/object-aware-editing/task-6/e2
 export const MAPPING_FIX_EVIDENCE = join(ROOT, ".omo/evidence/object-aware-editing/task-7/mapping-fix");
 export const FIXTURE = join(ROOT, "test/fixtures/object-editing/primary-object.png");
 export const SOURCE = join(ROOT, "test/fixtures/object-editing/SOURCE.json");
+const VITE = join(ROOT, "node_modules", "vite", "bin", "vite.js");
 
 export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -38,8 +39,8 @@ export async function startCowartServer(options = {}) {
   const canvasDir = await mkdtemp(join(tmpdir(), "cowart-e2e-"));
   const port = await freePort();
   const cowartUrl = `http://127.0.0.1:${port}`;
-  const command = options.command ?? "npm";
-  const args = options.args ?? ["run", "preview", "--", "--host", "127.0.0.1", "--port", String(port)];
+  const command = options.command ?? process.execPath;
+  const args = options.args ?? [VITE, "preview", "--host", "127.0.0.1", "--port", String(port)];
   const child = spawn(command, args, {
     cwd: ROOT,
     env: { ...process.env, COWART_CANVAS_DIR: canvasDir, ...options.env },

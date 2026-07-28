@@ -107,6 +107,13 @@ test("Given accessibility requirements When exported test IDs are read Then the 
     replace: "object-edit.replace",
     remove: "object-edit.remove",
     variants: "object-edit.variants",
+    sidecarMode: "object-edit.sidecar-mode",
+    sidecarPrompt: "object-edit.sidecar-prompt",
+    sidecarRun: "object-edit.sidecar-run",
+    decompose: "object-edit.decompose",
+    confirmDecompose: "object-edit.confirm-decompose",
+    cancelDecompose: "object-edit.cancel-decompose",
+    decompositionStack: "object-edit.decomposition-stack",
   });
 });
 

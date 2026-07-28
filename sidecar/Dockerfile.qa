@@ -1,0 +1,31 @@
+ARG BASE_IMAGE=python:3.11-slim-bookworm
+FROM ${BASE_IMAGE}
+
+ENV COWART_SIDECAR_DEVICE=auto \
+    COWART_SIDECAR_HOME=/opt/cowart/runtime \
+    UV_CACHE_DIR=/opt/cowart/.uv-cache \
+    UV_LINK_MODE=copy
+
+WORKDIR /opt/cowart
+COPY sidecar /opt/cowart/sidecar
+
+RUN if ! command -v python3 >/dev/null 2>&1; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+RUN python3 -m pip install --break-system-packages --no-cache-dir uv==0.11.8
+RUN uv sync \
+    --project sidecar \
+    --python 3.11 \
+    --group dev \
+    --extra models \
+    --locked
+RUN uv run \
+    --project sidecar \
+    --no-sync \
+    python \
+    -m \
+    cowart_sidecar.model_setup
+
+CMD ["uv", "run", "--project", "sidecar", "--no-sync", "python", "-m", "cowart_sidecar.smoke"]

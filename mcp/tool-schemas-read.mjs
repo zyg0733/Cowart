@@ -80,12 +80,14 @@ export const getRequestsTool = {
 export const getReferencesTool = {
   name: "get_cowart_references",
   title: "Get Cowart References",
-  description: "Resolve the reference images for a generation into local files (and optional base64) so they can be passed to image generation as input_image. Reads a holder's meta.cowartReferences / meta.cowartStyleRef, or explicit shapeIds / styleRef, or the current selection. Each result is tagged role 'reference' or 'style'.",
+  description: "Resolve holder references or a scene decomposition's source, confirmed segment masks, and existing artifacts into local files and optional base64 for Codex image generation.",
   inputSchema: objectSchema({
     projectDir: projectDirProperty,
     canvasDir: canvasDirProperty,
     cowartUrl: cowartUrlProperty,
     holderId: { type: "string", description: "Holder whose meta.cowartReferences / cowartStyleRef define the references." },
+    decompositionId: { type: "string", description: "Resolve one scene decomposition source, confirmed segment masks, and existing artifacts." },
+    decompositionRoles: { type: "array", items: { type: "string", enum: ["source", "segments", "artifacts"] }, description: "Subset of decomposition references to return. Defaults to all roles." },
     shapeIds: { type: "array", items: { type: "string" }, description: "Explicit reference image shape ids." },
     styleRef: { type: "string", description: "Explicit style-reference image shape id." },
     returnBase64: {

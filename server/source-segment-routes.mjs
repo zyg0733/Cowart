@@ -32,7 +32,7 @@ function pageLocalAssetUrlForSource(src, pageId) {
   return typeof src === 'string' && src.startsWith(`${pageAssetsRoute}${pageDirName(pageId)}/`)
 }
 
-async function validateCurrentSource(snapshot, source) {
+export async function validateCurrentSource(snapshot, source) {
   const shape = source.shapeId ? snapshot.store[source.shapeId] : null
   if (shape?.typeName !== 'shape') return sourceFailure('source_shape_not_found', 'Source shape was not found.', { shapeId: source.shapeId })
   const ownership = shapePageOwnership(snapshot, shape, source.pageId)
@@ -80,6 +80,7 @@ async function validateSourceAssetCondition(snapshot, condition) {
 
 function recordConditionValue(record, condition) {
   if (condition.field === 'meta.cowartRequest.id') return record?.meta?.cowartRequest?.id ?? null
+  if (condition.field === 'meta.cowartDecomposition.revision') return record?.meta?.cowartDecomposition?.revision ?? null
   if (condition.field === 'props.status') return record?.props?.status ?? null
   return undefined
 }
@@ -94,7 +95,7 @@ export async function validateRecordConditions(snapshot, conditions) {
     }
     const id = typeof condition?.id === 'string' ? condition.id : null
     const field = typeof condition?.field === 'string' ? condition.field : null
-    if (!id || !field || !['meta.cowartRequest.id', 'props.status'].includes(field)) {
+    if (!id || !field || !['meta.cowartRequest.id', 'meta.cowartDecomposition.revision', 'props.status'].includes(field)) {
       return { error: 'Unsupported canvas record precondition.' }
     }
     const actual = recordConditionValue(snapshot.store[id], condition)

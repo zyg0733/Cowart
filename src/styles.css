@@ -567,11 +567,13 @@ body {
   color: #1f2430;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(31, 36, 48, 0.14);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 4px 12px rgba(31, 36, 48, 0.12);
   font-size: 12px;
   line-height: 1.3;
   overflow-wrap: anywhere;
+  max-height: min(720px, calc(100vh - 24px));
+  overflow-y: auto;
   pointer-events: auto;
 }
 
@@ -587,6 +589,7 @@ body {
 .cowart-object-edit-panel--preview .cowart-object-edit-status,
 .cowart-object-edit-panel--confirmed .cowart-object-edit-status,
 .cowart-object-edit-panel--segmenting .cowart-object-edit-status,
+.cowart-object-edit-panel--sidecar .cowart-object-edit-status,
 .cowart-object-edit-panel--loading .cowart-object-edit-status {
   color: #087596;
 }
@@ -691,6 +694,109 @@ body {
   cursor: pointer;
   font: inherit;
   font-weight: 700;
+}
+
+.cowart-object-edit-segmentation {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(31, 36, 48, 0.1);
+}
+
+.cowart-object-edit-sidecar-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.cowart-object-edit-sidecar-input input {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  color: #1f2430;
+  background: #fff;
+  border: 1px solid rgba(31, 36, 48, 0.18);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.cowart-object-edit-sidecar-input button,
+.cowart-object-edit-sidecar-run,
+.cowart-object-edit-upload-confirm button {
+  min-height: 34px;
+  padding: 6px 10px;
+  color: #fff;
+  background: #087596;
+  border: 1px solid #087596;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.cowart-object-edit-sidecar-input button:disabled,
+.cowart-object-edit-sidecar-run:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.cowart-object-edit-upload-confirm {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  color: #5f3a06;
+  background: #fff8e8;
+  border: 1px solid #e4b65d;
+  border-radius: 7px;
+}
+
+.cowart-object-edit-upload-confirm p {
+  margin: 0;
+  font-weight: 700;
+}
+
+.cowart-object-edit-upload-confirm div {
+  display: flex;
+  gap: 6px;
+}
+
+.cowart-object-edit-upload-confirm button:last-child {
+  color: #344054;
+  background: #fff;
+  border-color: rgba(31, 36, 48, 0.18);
+}
+
+.cowart-decomposition-stack {
+  display: grid;
+  gap: 4px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(31, 36, 48, 0.1);
+}
+
+.cowart-decomposition-stack__header,
+.cowart-decomposition-stack label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+}
+
+.cowart-decomposition-stack__header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  color: #344054;
+  font-weight: 700;
+}
+
+.cowart-decomposition-stack label {
+  color: #475467;
+}
+
+.cowart-decomposition-stack small {
+  color: #087596;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .cowart-object-edit-candidate-nav {

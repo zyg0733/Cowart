@@ -137,8 +137,8 @@ async function waitForServer(server, timeoutMs) {
 
 export async function seedFixtureThroughEditor(page, cowartUrl, bytes, manifest) {
   const dataUrl = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
-  await page.evaluate(({ dataUrl: src, manifest: source }) => {
-    const editor = window.__cowartEditor;
+  const snapshot = await page.evaluate(async ({ dataUrl: src, manifest: source }) => {
+    const editor = await stableCowartEditor();
     editor.createAssets([{
       id: "asset:fixture",
       typeName: "asset",
@@ -148,8 +148,16 @@ export async function seedFixtureThroughEditor(page, cowartUrl, bytes, manifest)
     }]);
     editor.createShape({ id: "shape:fixture", type: "image", x: 120, y: 100, props: { assetId: "asset:fixture", w: 384, h: 288 } });
     editor.select("shape:fixture");
+    return editor.store.getStoreSnapshot();
+
+    async function stableCowartEditor() {
+      while (true) {
+        const candidate = window.__cowartEditor;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (candidate && window.__cowartEditor === candidate) return candidate;
+      }
+    }
   }, { dataUrl, manifest });
-  const snapshot = await page.evaluate(() => window.__cowartEditor.store.getStoreSnapshot());
   const response = await fetch(`${cowartUrl}/api/canvas`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -159,11 +167,18 @@ export async function seedFixtureThroughEditor(page, cowartUrl, bytes, manifest)
 }
 
 export async function selectFixture(page) {
-  await page.waitForFunction(() => window.__cowartEditor);
-  await page.evaluate(() => {
-    const editor = window.__cowartEditor;
+  await page.evaluate(async () => {
+    const editor = await stableCowartEditor();
     editor.select("shape:fixture");
     editor.zoomToSelection({ animation: { duration: 0 } });
+
+    async function stableCowartEditor() {
+      while (true) {
+        const candidate = window.__cowartEditor;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (candidate && window.__cowartEditor === candidate) return candidate;
+      }
+    }
   });
 }
 

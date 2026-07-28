@@ -80,6 +80,10 @@ export function sendError(res, error) {
     sendJson(res, error.status ?? 400, { error: error.message, code: error.code })
     return
   }
+  if (typeof error?.code === 'string' && Number.isInteger(error?.status)) {
+    sendJson(res, error.status, { error: error.message, code: error.code, details: error.details ?? {} })
+    return
+  }
   if (error instanceof SyntaxError) {
     sendJson(res, 400, { error: 'Malformed JSON request body.', code: 'malformed_json' })
     return

@@ -16,6 +16,7 @@ import {
   requestConditionList,
 } from "./request-lifecycle.mjs";
 import { finiteNumber, nonEmptyString, resolveCanvasDir, sanitizeIdPart, uniqueRecordId } from "./paths.mjs";
+import { decompositionReferences } from "./decomposition-tools.mjs";
 
 export async function createCowartImageHolder(args = {}, deps) {
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
@@ -75,6 +76,7 @@ export async function updateCowartHolder(args = {}) {
   if (holder.type !== COWART_AI_IMAGE_SHAPE) throw new Error(`Shape ${holderId} is type "${holder.type}", not a cowart-ai-image holder.`);
   const props = { ...holder.props };
   const meta = { ...holder.meta };
+  const previousDecompositionRevision = finiteNumber(meta.cowartDecomposition?.revision, null);
   let changed = updateHolderStatus({ args, holder, props, meta });
   if (typeof args.prompt === "string") {
     props.prompt = args.prompt;
@@ -90,6 +92,9 @@ export async function updateCowartHolder(args = {}) {
   const updated = { ...holder, props, meta };
   if (!args.dryRun) {
     const extraConditions = nonEmptyString(args.status) === "generating" && nonEmptyString(args.expectedRequestId) ? [{ id: holder.id, field: "props.status", equals: "requested" }] : [];
+    if (previousDecompositionRevision !== null && meta.cowartDecomposition?.revision !== previousDecompositionRevision) {
+      extraConditions.push({ id: holder.id, field: "meta.cowartDecomposition.revision", equals: previousDecompositionRevision });
+    }
     await persistRecords(cowartUrl, store, snapshot, { put: [updated], conditions: requestConditionList(holder.id, args.expectedRequestId, extraConditions) });
   }
   return {
@@ -114,7 +119,14 @@ function updateHolderStatus({ args, holder, props, meta }) {
       ...args,
       objectAction: args.objectAction ?? meta.cowartObjectAction,
       variant: args.variant ?? meta.cowartVariant,
-      requestKind: args.requestKind ?? (meta.cowartVariant ? "variant" : meta.cowartObjectAction ? "object_action" : undefined),
+      decomposition: meta.cowartDecomposition ? {
+        id: meta.cowartDecomposition.id,
+        sourceShapeId: meta.cowartDecomposition.sourceShapeId,
+        sourceSha256: meta.cowartDecomposition.sourceSha256,
+        segmentIds: meta.cowartDecomposition.segmentIds,
+        artifactKinds: ["depth_hint", "clean_plate"],
+      } : undefined,
+      requestKind: args.requestKind ?? (meta.cowartDecomposition ? "scene_decomposition" : meta.cowartVariant ? "variant" : meta.cowartObjectAction ? "object_action" : undefined),
     });
   } else if (nextStatus === "generating" && activeRequest) {
     meta.cowartRequest = { ...activeRequest, startedAt: nonEmptyString(activeRequest.startedAt) || new Date().toISOString() };
@@ -127,6 +139,24 @@ function updateHolderStatus({ args, holder, props, meta }) {
     delete meta.cowartRequest;
   }
   props.status = nextStatus;
+  if (meta.cowartDecomposition) {
+    const decompositionStatus = nextStatus === "requested"
+      ? "requested"
+      : nextStatus === "generating"
+        ? "generating"
+        : nextStatus === "failed"
+          ? "failed"
+          : nextStatus === "empty"
+            ? "cancelled"
+            : meta.cowartDecomposition.status;
+    if (decompositionStatus !== meta.cowartDecomposition.status) {
+      meta.cowartDecomposition = {
+        ...meta.cowartDecomposition,
+        status: decompositionStatus,
+        revision: finiteNumber(meta.cowartDecomposition.revision, 0) + 1,
+      };
+    }
+  }
   return true;
 }
 
@@ -148,9 +178,17 @@ function updateHolderReferences({ args, store, meta }) {
   return changed;
 }
 
-export async function getCowartReferences(args = {}) {
+export async function getCowartReferences(args = {}, deps) {
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
+  if (nonEmptyString(args.decompositionId)) {
+    const decomposition = await decompositionReferences(args, snapshot, deps);
+    return {
+      cowartUrl,
+      decomposition: decomposition.manifest,
+      references: decomposition.references,
+    };
+  }
   const { selection } = await readSelectionState(args);
   const canvasDir = resolveCanvasDir(args);
   let ids = Array.isArray(args.shapeIds) ? args.shapeIds.filter((id) => typeof id === "string") : null;

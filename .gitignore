@@ -2,3 +2,8 @@ node_modules/
 dist/
 .DS_Store
 /canvas/
+/sidecar/.venv/
+/sidecar/.models/
+/sidecar/.pytest_cache/
+/sidecar/.uv-cache/
+/sidecar/**/__pycache__/

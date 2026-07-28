@@ -229,14 +229,22 @@ async function requestJson(url, method, body) {
   return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
-export async function confirmSegment(ctx, { segmentId = "segment:confirmed", bytes = imageBytes(), width = 1, height = 1, pixels = Uint8Array.from([255]) } = {}) {
+export async function confirmSegment(ctx, {
+  segmentId = "segment:confirmed",
+  bytes = imageBytes(),
+  width = 1,
+  height = 1,
+  pixels = Uint8Array.from([255]),
+  source = null,
+  provider = null,
+} = {}) {
   const result = await requestJson(`${ctx.cowartUrl}/api/canvas/segments/confirm`, "POST", {
     segmentId,
-    source: { pageId: "page:one", shapeId: "shape:image", assetId: "asset:image", assetSha256: sha256(bytes), width, height },
+    source: source ?? { pageId: "page:one", shapeId: "shape:image", assetId: "asset:image", assetSha256: sha256(bytes), width, height },
     maskBase64: maskPng(width, height, pixels).toString("base64"),
     previewBase64: maskPng(width, height, pixels).toString("base64"),
     selection: { mode: "point", points: [{ x: 0, y: 0, label: "positive" }] },
-    provider: { id: "test-provider", runtime: "browser", processing: "local", model: "fixture", version: "1" },
+    provider: provider ?? { id: "test-provider", runtime: "browser", processing: "local", model: "fixture", version: "1" },
   });
   assert.equal(result.status, 201, JSON.stringify(result.body));
   return result.body.segment;

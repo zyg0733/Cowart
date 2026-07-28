@@ -1,6 +1,6 @@
 {
   "name": "cowart-canvas",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,7 +11,11 @@
     "test": "sh -c 'node --test \"$@\" test/*.test.mjs' --",
     "test:e2e": "npm run build && playwright test",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "sidecar:setup": "node scripts/sidecar-setup.mjs",
+    "sidecar:start": "node scripts/sidecar-start.mjs",
+    "sidecar:test": "UV_CACHE_DIR=sidecar/.uv-cache uv run --project sidecar --no-sync python -m unittest discover -s sidecar/tests -v",
+    "sidecar:smoke": "UV_CACHE_DIR=sidecar/.uv-cache uv run --project sidecar --no-sync python -m cowart_sidecar.smoke"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "0.10.35",

@@ -70,6 +70,7 @@ export function makeCowartRequest(meta, args = {}) {
   };
   if (args.objectAction && typeof args.objectAction === "object") request.objectAction = args.objectAction;
   if (args.variant && typeof args.variant === "object") request.variant = args.variant;
+  if (args.decomposition && typeof args.decomposition === "object") request.decomposition = args.decomposition;
   return request;
 }
 

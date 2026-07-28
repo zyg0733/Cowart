@@ -14,6 +14,7 @@ export function CowartObjectEditOverlay() {
     candidate,
     candidateCount,
     candidateIndex,
+    decomposition,
     dock,
     error,
     interactionMode,
@@ -23,14 +24,23 @@ export function CowartObjectEditOverlay() {
     previousCandidate,
     previewLayout,
     queueObjectAction,
+    queueSceneDecomposition,
     queueVariantGrid,
     redo,
     resetMask,
     segments,
     selectedSegmentId,
+    segmentationMode,
     selectSegment,
     setBrushSize,
+    setDecompositionArtifactVisible,
     setInteractionMode,
+    setSegmentationMode,
+    setShowDecompositionConfirm,
+    setSidecarPrompt,
+    showDecompositionConfirm,
+    sidecarPrompt,
+    runSidecarSegmentation,
     status,
     support,
     undo
@@ -78,11 +88,39 @@ export function CowartObjectEditOverlay() {
         aria-live="polite"
       >
         <div className="cowart-object-edit-status" data-testid={OBJECT_EDIT_TEST_IDS.status}>
-          {(phase === 'loading' || phase === 'segmenting') ? (
+          {(phase === 'loading' || phase === 'segmenting' || phase === 'sidecar') ? (
             <span className="cowart-object-edit-spinner" data-testid={OBJECT_EDIT_TEST_IDS.loading} aria-hidden="true" />
           ) : null}
           <span>{status}</span>
         </div>
+        {active ? (
+          <div className="cowart-object-edit-segmentation">
+            <div className="cowart-object-edit-mode" role="group" aria-label="Segmentation mode">
+              <button type="button" aria-pressed={segmentationMode === 'point'} onClick={() => setSegmentationMode('point')}>Point</button>
+              <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.sidecarMode} aria-pressed={segmentationMode === 'text'} onClick={() => setSegmentationMode('text')}>Text</button>
+              <button type="button" aria-pressed={segmentationMode === 'automatic'} onClick={() => setSegmentationMode('automatic')}>Auto</button>
+            </div>
+            {segmentationMode === 'text' ? (
+              <div className="cowart-object-edit-sidecar-input">
+                <input
+                  data-testid={OBJECT_EDIT_TEST_IDS.sidecarPrompt}
+                  value={sidecarPrompt}
+                  maxLength={500}
+                  placeholder="Object name"
+                  aria-label="Object name"
+                  onChange={(event) => setSidecarPrompt(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && sidecarPrompt.trim()) runSidecarSegmentation()
+                  }}
+                />
+                <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.sidecarRun} onClick={runSidecarSegmentation} disabled={!sidecarPrompt.trim() || phase === 'sidecar'}>Run</button>
+              </div>
+            ) : null}
+            {segmentationMode === 'automatic' ? (
+              <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.sidecarRun} className="cowart-object-edit-sidecar-run" onClick={runSidecarSegmentation} disabled={phase === 'sidecar'}>Find objects</button>
+            ) : null}
+          </div>
+        ) : null}
         {segments.length > 0 ? <div className="cowart-object-edit-summary">{segments.length} confirmed</div> : null}
         {segments.length > 0 ? (
           <div className="cowart-object-edit-object-list" data-testid={OBJECT_EDIT_TEST_IDS.objectList} aria-label="Confirmed objects">
@@ -110,9 +148,38 @@ export function CowartObjectEditOverlay() {
             <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.replace} onClick={() => queueObjectAction('replace')}>Replace</button>
             <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.remove} onClick={() => queueObjectAction('remove')}>Remove</button>
             <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.variants} onClick={queueVariantGrid}>4 variants</button>
+            <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.decompose} onClick={() => setShowDecompositionConfirm(true)}>Decompose</button>
           </div>
         ) : null}
-        {(phase === 'error' || phase === 'stale' || !support.ok) ? (
+        {showDecompositionConfirm ? (
+          <div className="cowart-object-edit-upload-confirm" role="alertdialog" aria-label="Confirm image upload">
+            <p>Send this source image and {segments.length} confirmed object {segments.length === 1 ? 'mask' : 'masks'} to Codex image_gen?</p>
+            <div>
+              <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.confirmDecompose} onClick={queueSceneDecomposition}>Confirm</button>
+              <button type="button" data-testid={OBJECT_EDIT_TEST_IDS.cancelDecompose} onClick={() => setShowDecompositionConfirm(false)}>Cancel</button>
+            </div>
+          </div>
+        ) : null}
+        {decomposition ? (
+          <div className="cowart-decomposition-stack" data-testid={OBJECT_EDIT_TEST_IDS.decompositionStack}>
+            <div className="cowart-decomposition-stack__header">
+              <span>Decomposition</span>
+              <span>{decomposition.manifest.status}</span>
+            </div>
+            {decomposition.artifacts.map((artifact) => (
+              <label key={`${artifact.kind}:${artifact.imageShapeId}`}>
+                <input
+                  type="checkbox"
+                  checked={artifact.visible}
+                  onChange={(event) => setDecompositionArtifactVisible(artifact.imageShapeId, event.target.checked)}
+                />
+                <span>{artifact.kind.replaceAll('_', ' ')}</span>
+                {artifact.synthetic ? <small>AI</small> : <small>Source</small>}
+              </label>
+            ))}
+          </div>
+        ) : null}
+        {(phase === 'error' || phase === 'stale' || (segmentationMode === 'point' && !support.ok)) ? (
           <div className="cowart-object-edit-error" data-testid={OBJECT_EDIT_TEST_IDS.error}>{error || status}</div>
         ) : null}
         {active ? (

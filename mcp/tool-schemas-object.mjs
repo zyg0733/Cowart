@@ -26,7 +26,7 @@ export const makeMaskTool = {
 export const segmentImageTool = {
   name: "segment_cowart_image",
   title: "Segment Cowart Image",
-  description: "Request object segmentation for a Cowart image. Without a configured real server-side provider, returns browser_interaction_required and instructs the caller to use the canvas object tool; it never synthesizes segment success.",
+  description: "Run local object segmentation through the loopback Cowart Sidecar. Candidate masks are returned without persistence by default. Only publish=true writes the selected candidate to the immutable Segment Store. Without a configured Sidecar, returns browser_interaction_required and never synthesizes success.",
   inputSchema: objectSchema({
     projectDir: projectDirProperty,
     canvasDir: canvasDirProperty,
@@ -39,6 +39,11 @@ export const segmentImageTool = {
     prompt: { type: "string", description: "Text prompt when a real provider supports it." },
     provider: { type: "string", description: "Provider id, or auto. Browser-only provider is not callable from MCP." },
     maxCandidates: { type: "number", description: "Maximum candidates requested from a real provider." },
+    candidateIndex: { type: "number", description: "Zero-based candidate to publish. Defaults to 0 and is only used with publish=true." },
+    segmentId: { type: "string", description: "Optional immutable Segment Store id used only with publish=true." },
+    publish: { type: "boolean", description: "Explicitly publish the selected Sidecar candidate to Segment Store. Defaults to false." },
+    sidecarUrl: { type: "string", description: "Loopback Cowart Sidecar URL. Defaults to COWART_SIDECAR_URL when configured." },
+    sidecarTokenFile: { type: "string", description: "Path to the 0600 Sidecar bearer token. Defaults to COWART_SIDECAR_TOKEN_FILE or ~/.cowart/sidecar/token." },
     expectedSourceAssetHash: { type: "string", description: "Expected current source SHA-256 for providers that read source bytes." },
     returnBase64: { type: "boolean", description: "Whether a real provider should return mask bytes inline." },
   }),

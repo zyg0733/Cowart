@@ -47,12 +47,16 @@ test("Given the current MCP server When tools are listed Then legacy tools and o
       "extract_cowart_object",
       "create_cowart_variant_grid",
       "select_cowart_variant",
+      "create_cowart_decomposition",
+      "publish_cowart_decomposition_artifact",
     ].includes(name)), [
       "extract_cowart_object",
       "create_cowart_variant_grid",
       "select_cowart_variant",
+      "create_cowart_decomposition",
+      "publish_cowart_decomposition_artifact",
     ]);
-    assert.equal(names.length, 17);
+    assert.equal(names.length, 19);
     for (const tool of response.result.tools) {
       assert.equal(tool.inputSchema.type, "object", tool.name);
       assert.equal(tool.inputSchema.additionalProperties, false, tool.name);

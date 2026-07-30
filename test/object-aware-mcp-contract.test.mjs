@@ -20,7 +20,7 @@ import {
   writeSelection,
 } from "./object-aware-mcp-harness.mjs";
 
-test("Given the current MCP server When tools are listed Then all 12 existing tools remain compatible and the two segment tools are added", async () => {
+test("Given the current MCP server When tools are listed Then legacy tools and object-action tools remain compatible", async () => {
   await withViteHarness(async (ctx) => {
     const [response] = await rpc([{ jsonrpc: "2.0", id: 1, method: "tools/list" }], ctx);
     const names = response.result.tools.map((tool) => tool.name);
@@ -43,7 +43,16 @@ test("Given the current MCP server When tools are listed Then all 12 existing to
       "segment_cowart_image",
       "refine_cowart_segment",
     ]);
-    assert.equal(names.length, 14);
+    assert.deepEqual(names.filter((name) => [
+      "extract_cowart_object",
+      "create_cowart_variant_grid",
+      "select_cowart_variant",
+    ].includes(name)), [
+      "extract_cowart_object",
+      "create_cowart_variant_grid",
+      "select_cowart_variant",
+    ]);
+    assert.equal(names.length, 17);
     for (const tool of response.result.tools) {
       assert.equal(tool.inputSchema.type, "object", tool.name);
       assert.equal(tool.inputSchema.additionalProperties, false, tool.name);

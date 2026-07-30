@@ -16,6 +16,17 @@ export const createHolderTool = {
     height: { type: "number", description: "Holder height in canvas units. Defaults to 220." },
     name: { type: "string", description: "Holder label. Defaults to AI 图片." },
     prompt: { type: "string", description: "Optional prompt shown on the holder describing what to generate into it." },
+    objectAction: {
+      type: "object",
+      description: "Create an immediately queued object edit request backed by a confirmed segment.",
+      properties: {
+        operation: { type: "string", enum: ["modify", "replace", "remove"] },
+        segmentId: { type: "string" },
+        prompt: { type: "string" },
+      },
+      required: ["operation", "segmentId"],
+      additionalProperties: false,
+    },
     shapeMeta: { type: "object", description: "Additional tldraw shape metadata." },
     dryRun: { type: "boolean", description: "Calculate placement without saving." },
   }),
@@ -79,6 +90,49 @@ export const updateHolderTool = {
     styleRef: { type: "string", description: "Shape id of a style-reference image (style_match); stored in meta.cowartStyleRef. Empty string clears it." },
     genParams: { type: "object", description: "Full generation call (prompt, refs, size, model, seed, …) to record for reproducibility (stored in meta.cowartGen)." },
     dryRun: { type: "boolean", description: "Resolve the update without saving." },
+  }),
+  annotations: idempotentWriteAnnotations,
+};
+
+export const createVariantGridTool = {
+  name: "create_cowart_variant_grid",
+  title: "Create Cowart Variant Grid",
+  description: "Atomically create 1-6 queued AI image holders for one confirmed object action. Defaults to a four-up grid; requests remain FIFO and all results are retained.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    segmentId: { type: "string", description: "Confirmed segment identifying the object." },
+    operation: { type: "string", enum: ["modify", "replace", "remove"], description: "Object action shared by every variant. Defaults to modify." },
+    prompt: { type: "string", description: "Generation prompt shared by the variant requests." },
+    count: { type: "number", minimum: 1, maximum: 6, description: "Number of holders. Defaults to 4; maximum 6." },
+    gridId: { type: "string", description: "Optional caller-stable grid id. Duplicate ids are rejected atomically." },
+    requestIds: { type: "array", maxItems: 6, items: { type: "string" }, description: "Optional caller-stable request ids in grid order." },
+    requestedAt: { type: "string", description: "Optional shared ISO request time." },
+    placement: { type: "string", enum: ["right", "left", "below"], description: "Grid placement from the source. Defaults to right." },
+    margin: { type: "number", description: "Canvas units between source and grid." },
+    gap: { type: "number", description: "Canvas units between holders. Defaults to 24." },
+    width: { type: "number", description: "Holder width. Defaults to 320." },
+    height: { type: "number", description: "Holder height. Defaults to 220." },
+    expectedSourceAssetHash: { type: "string", description: "Require the source bytes to still match this SHA-256." },
+    dryRun: { type: "boolean", description: "Plan the atomic grid without saving." },
+  }, { required: ["segmentId", "prompt"] }),
+  annotations: writeAnnotations,
+};
+
+export const selectVariantTool = {
+  name: "select_cowart_variant",
+  title: "Select Cowart Variant",
+  description: "Atomically mark one filled holder as the winner of a Variant Grid. The shared winner metadata is written to every member and the source; non-winners are retained.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    winnerHolderId: { type: "string", description: "Filled holder to select as winner." },
+    holderId: { type: "string", description: "Alias for winnerHolderId." },
+    gridId: { type: "string", description: "Optional expected Variant Grid id." },
+    selectedAt: { type: "string", description: "Optional ISO selection time." },
+    dryRun: { type: "boolean", description: "Validate and plan without saving." },
   }),
   annotations: idempotentWriteAnnotations,
 };

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { encodeCanonicalMaskPng } from "../shared/cowart-segment-mask.mjs";
 import {
   EVIDENCE,
   MAPPING_FIX_EVIDENCE,
@@ -115,6 +116,23 @@ test("object edit uses real local MediaPipe segmentation and persists confirmed 
     await page.mouse.click(point.x, point.y);
     await expect(page.getByTestId("object-edit.loading")).toBeVisible();
     await page.screenshot({ path: join(EVIDENCE, "point-loading.png"), fullPage: true });
+    await expect(page.locator(".cowart-object-edit-panel--preview")).toBeVisible({ timeout: 90_000 });
+    const alternativePoint = await screenPoint(page, manifest.inputs.points[1]);
+    await page.mouse.click(alternativePoint.x, alternativePoint.y);
+    await expect(page.getByText("2 / 2", { exact: true })).toBeVisible({ timeout: 90_000 });
+    await page.getByTestId("object-edit.previous-candidate").click();
+    await expect(page.getByText("1 / 2", { exact: true })).toBeVisible();
+    await page.getByTestId("object-edit.brush-remove").click();
+    await page.mouse.move(point.x - 10, point.y);
+    await page.mouse.down();
+    await page.mouse.move(point.x + 10, point.y, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.getByTestId("object-edit.undo")).toBeEnabled();
+    await page.getByTestId("object-edit.undo").click();
+    await expect(page.getByTestId("object-edit.redo")).toBeEnabled();
+    await page.getByTestId("object-edit.redo").click();
+    await page.getByTestId("object-edit.reset").click();
+    await page.screenshot({ path: join(EVIDENCE, "candidate-brush-history.png"), fullPage: true });
     await acceptPreviewWithKeyboard(page);
     await page.screenshot({ path: join(EVIDENCE, "point-confirmed.png"), fullPage: true });
 
@@ -221,6 +239,77 @@ test("object edit maps transformed image clicks with live shape and ancestor rec
       pointSegment,
       screenshots: ["transformed-preview-overlay.png", "transformed-confirmed.png"],
     }, null, 2));
+  } finally {
+    await stopCowartServer(server);
+  }
+});
+
+test("confirmed objects queue object actions and a four-up Variant Grid from the canvas", async ({ page }) => {
+  const server = await startCowartServer();
+  try {
+    const { bytes, manifest } = await loadFixture();
+    await page.goto(server.cowartUrl);
+    await page.evaluate(() => localStorage.setItem("cowart-onboarding-dismissed", "1"));
+    await seedFixtureThroughEditor(page, server.cowartUrl, bytes, manifest);
+    const width = manifest.file.dimensions.width;
+    const height = manifest.file.dimensions.height;
+    const pageId = await page.evaluate(() => window.__cowartEditor.getCurrentPageId());
+    const mask = encodeCanonicalMaskPng({ width, height, pixels: new Uint8Array(width * height).fill(255) });
+    const confirmed = await fetch(`${server.cowartUrl}/api/canvas/segments/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        segmentId: "segment:e2e-object",
+        source: {
+          pageId,
+          shapeId: "shape:fixture",
+          assetId: "asset:fixture",
+          assetSha256: sha256(bytes),
+          width,
+          height,
+        },
+        maskBase64: mask.toString("base64"),
+        previewBase64: mask.toString("base64"),
+        selection: { mode: "point", point: { x: 0.5, y: 0.5 } },
+        provider: { id: "e2e-fixture", runtime: "test", processing: "local", model: "fixture", version: "1" },
+      }),
+    });
+    expect(confirmed.status).toBe(201);
+
+    await page.reload();
+    await selectFixture(page);
+    await activateTool(page);
+    await expect(page.getByTestId("object-edit.object-list")).toBeVisible();
+    await page.getByTestId("object-edit.variants").click();
+    const grid = await page.evaluate(() => {
+      const editor = window.__cowartEditor;
+      const shapes = Array.from(editor.getCurrentPageShapeIds(), (id) => editor.getShape(id)).filter(Boolean);
+      const holders = shapes.filter((shape) => shape.meta?.cowartVariantGroup?.id);
+      return {
+        count: holders.length,
+        gridIds: [...new Set(holders.map((shape) => shape.meta.cowartVariantGroup.id))],
+        requestKinds: holders.map((shape) => shape.meta.cowartRequest?.kind),
+        indexes: holders.map((shape) => shape.meta.cowartVariant?.index).sort(),
+      };
+    });
+    expect(grid.count).toBe(4);
+    expect(grid.gridIds).toHaveLength(1);
+    expect(grid.requestKinds).toEqual(["variant", "variant", "variant", "variant"]);
+    expect(grid.indexes).toEqual([0, 1, 2, 3]);
+
+    await page.getByTestId("object-edit.modify").click();
+    const actions = await page.evaluate(() => {
+      const editor = window.__cowartEditor;
+      return Array.from(editor.getCurrentPageShapeIds(), (id) => editor.getShape(id))
+        .filter((shape) => shape?.meta?.cowartRequest?.kind === "object_action")
+        .map((shape) => shape.meta.cowartObjectAction.operation);
+    });
+    expect(actions).toEqual(["modify"]);
+
+    for (const viewport of [{ width: 375, height: 812 }, { width: 768, height: 900 }, { width: 1280, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      await page.screenshot({ path: join(EVIDENCE, `variant-grid-${viewport.width}.png`), fullPage: true });
+    }
   } finally {
     await stopCowartServer(server);
   }

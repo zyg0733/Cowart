@@ -16,6 +16,7 @@ import {
 let segmenterPromise = null
 let segmenter = null
 let segmenterChecksum = null
+let workQueue = Promise.resolve()
 
 export function resetSegmenter() {
   segmenter?.close?.()
@@ -67,7 +68,7 @@ export async function segmentImage(message) {
     const mask = selectForegroundMaskBytes(result, bitmap.width, bitmap.height, roi)
     const summary = summarizeMask(mask)
     if (summary.area === 0) throw new Error('Interactive Segmenter returned an empty mask.')
-    return { ...summary, width: mask.width, height: mask.height, maskPng: encodeGrayscalePng(mask) }
+    return { ...summary, width: mask.width, height: mask.height, maskPixels: mask.pixels, maskPng: encodeGrayscalePng(mask) }
   } finally {
     bitmap.close?.()
   }
@@ -75,23 +76,28 @@ export async function segmentImage(message) {
 
 export function installObjectEditWorker(scope = globalThis.self) {
   if (typeof scope === 'undefined' || typeof scope.postMessage !== 'function') return
-  scope.addEventListener('message', async (event) => {
+  scope.addEventListener('message', (event) => {
     const message = event.data
     if (message?.type === 'close') {
-      resetSegmenter()
+      workQueue = workQueue.finally(() => resetSegmenter())
       return
     }
     if (message?.type !== 'segment') return
-    try {
-      const result = await segmentImage(message)
-      scope.postMessage({ type: 'segment-result', token: message.token, ...result }, [result.maskPng.buffer])
-    } catch (error) {
-      scope.postMessage({
-        type: 'segment-error',
-        token: message.token,
-        code: error?.code ?? 'segment_failed',
-        message: error instanceof Error ? error.message : String(error)
-      })
-    }
+    workQueue = workQueue.then(async () => {
+      try {
+        const result = await segmentImage(message)
+        scope.postMessage(
+          { type: 'segment-result', token: message.token, ...result },
+          [result.maskPng.buffer, result.maskPixels.buffer]
+        )
+      } catch (error) {
+        scope.postMessage({
+          type: 'segment-error',
+          token: message.token,
+          code: error?.code ?? 'segment_failed',
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    })
   })
 }

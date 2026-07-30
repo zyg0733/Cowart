@@ -1,7 +1,9 @@
 import {
   TOOL_ADD_SHAPES,
   TOOL_CREATE_HOLDER,
+  TOOL_CREATE_VARIANT_GRID,
   TOOL_EXPORT_VIEW,
+  TOOL_EXTRACT_OBJECT,
   TOOL_GET_ANNOTATIONS,
   TOOL_GET_CANVAS,
   TOOL_GET_REFERENCES,
@@ -12,6 +14,7 @@ import {
   TOOL_REFINE_SEGMENT,
   TOOL_REPLACE_IMAGE,
   TOOL_SEGMENT_IMAGE,
+  TOOL_SELECT_VARIANT,
   TOOL_UPDATE_HOLDER,
 } from "./constants.mjs";
 import { getRecord, loadCanvasSnapshot, readSelectionState } from "./canvas-client.mjs";
@@ -22,7 +25,9 @@ import { describeShape, getCowartAnnotations, getCowartCanvas, getCowartRequests
 import { exportCowartView } from "./export-tool.mjs";
 import { insertCowartImage } from "./insert-image.mjs";
 import { makeCowartMask } from "./mask-tool.mjs";
+import { extractCowartObject } from "./object-actions.mjs";
 import { replaceCowartImage } from "./replace-image.mjs";
+import { createCowartVariantGrid, selectCowartVariant } from "./variant-tools.mjs";
 import { sendError, sendResult, JsonRpcError } from "./transport.mjs";
 
 const objectAwareDeps = createObjectAwareDeps(loadCanvasSnapshot, getRecord);
@@ -41,6 +46,9 @@ export async function handleToolCall(id, params) {
   if (params?.name === TOOL_MAKE_MASK) return sendMakeMask(id, toolArgs);
   if (params?.name === TOOL_SEGMENT_IMAGE) return sendSegmentImage(id, toolArgs);
   if (params?.name === TOOL_REFINE_SEGMENT) return sendRefineSegment(id, toolArgs);
+  if (params?.name === TOOL_EXTRACT_OBJECT) return sendExtractObject(id, toolArgs);
+  if (params?.name === TOOL_CREATE_VARIANT_GRID) return sendCreateVariantGrid(id, toolArgs);
+  if (params?.name === TOOL_SELECT_VARIANT) return sendSelectVariant(id, toolArgs);
   if (params?.name === TOOL_UPDATE_HOLDER) return sendUpdateHolder(id, toolArgs);
   if (params?.name === TOOL_GET_REFERENCES) return sendReferences(id, toolArgs);
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
@@ -94,7 +102,7 @@ async function sendRequests(id, toolArgs) {
 }
 
 async function sendCreateHolder(id, toolArgs) {
-  const result = await createCowartImageHolder(toolArgs);
+  const result = await createCowartImageHolder(toolArgs, objectAwareDeps);
   sendResult(id, { content: [{ type: "text", text: `${result.dryRun ? "Planned" : "Created"} holder ${result.shapeId} on ${result.pageId} at (${result.bounds.x}, ${result.bounds.y}).` }], structuredContent: result }, toolArgs);
 }
 
@@ -127,6 +135,30 @@ async function sendSegmentImage(id, toolArgs) {
 async function sendRefineSegment(id, toolArgs) {
   const result = await refineCowartSegmentTool(toolArgs, objectAwareDeps);
   sendResult(id, { content: [{ type: "text", text: `Refined ${result.parentSegmentId} -> ${result.segment.segmentId}.` }], structuredContent: result }, toolArgs);
+}
+
+async function sendExtractObject(id, toolArgs) {
+  const result = await extractCowartObject(toolArgs, objectAwareDeps);
+  sendResult(id, {
+    content: [{ type: "text", text: `${result.dryRun ? "Planned extraction" : "Extracted"} ${result.segmentId} -> ${result.shapeId} (${result.extraction.naturalSize.width}x${result.extraction.naturalSize.height} transparent PNG).` }],
+    structuredContent: result,
+  }, toolArgs);
+}
+
+async function sendCreateVariantGrid(id, toolArgs) {
+  const result = await createCowartVariantGrid(toolArgs, objectAwareDeps);
+  sendResult(id, {
+    content: [{ type: "text", text: `${result.dryRun ? "Planned" : "Created"} Variant Grid ${result.gridId} with ${result.count} queued holder(s).` }],
+    structuredContent: result,
+  }, toolArgs);
+}
+
+async function sendSelectVariant(id, toolArgs) {
+  const result = await selectCowartVariant(toolArgs, objectAwareDeps);
+  sendResult(id, {
+    content: [{ type: "text", text: `${result.dryRun ? "Planned winner" : "Selected winner"} ${result.winnerHolderId} for ${result.gridId}; ${result.memberHolderIds.length - 1} alternative(s) retained.` }],
+    structuredContent: result,
+  }, toolArgs);
 }
 
 async function sendUpdateHolder(id, toolArgs) {

@@ -201,13 +201,17 @@ function CowartAiImageComponent({ shape }) {
     if (status === 'requested' || status === 'generating') return
 
     const requestedAt = new Date().toISOString()
+    const request = {
+      id: createCowartRequestId(),
+      requestedAt,
+      attempt: getNextRequestAttempt(meta),
+      kind: meta.cowartVariant ? 'variant' : meta.cowartObjectAction ? 'object_action' : 'image_generation'
+    }
+    if (meta.cowartObjectAction) request.objectAction = meta.cowartObjectAction
+    if (meta.cowartVariant) request.variant = meta.cowartVariant
     const nextMeta = {
       ...meta,
-      cowartRequest: {
-        id: createCowartRequestId(),
-        requestedAt,
-        attempt: getNextRequestAttempt(meta)
-      }
+      cowartRequest: request
     }
     const archivedRequest = archiveActiveRequest(meta, { supersededAt: requestedAt })
     if (archivedRequest) nextMeta.cowartLastRequest = archivedRequest

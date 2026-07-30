@@ -4,6 +4,7 @@ import { confirmedSegmentsBySource, confirmedSegmentsForShape, publicShapeMeta }
 import { loadCanvasSnapshot, readSelectionState, readViewState } from "./canvas-client.mjs";
 import { getPageShapes, nearestGenSize, pageBoundsForShape } from "./geometry.mjs";
 import { currentHolderRequest } from "./request-lifecycle.mjs";
+import { buildLineageTimeline } from "./lineage-timeline.mjs";
 import { finiteNumber, nonEmptyString } from "./paths.mjs";
 
 export function plainTextFromRichText(richText) {
@@ -84,7 +85,12 @@ export async function getCowartCanvas(args = {}, deps) {
   const pages = resolveTargetPages(store, args, viewState).map((page) => ({
     pageId: page.id, name: page.name ?? null, shapes: getPageShapes(store, page.id).map((shape) => describeShape(store, shape, segmentMap)),
   }));
-  return { cowartUrl, currentPageId: nonEmptyString(viewState?.currentPageId) ?? null, pages };
+  return {
+    cowartUrl,
+    currentPageId: nonEmptyString(viewState?.currentPageId) ?? null,
+    pages,
+    lineageTimeline: buildLineageTimeline(store, pages),
+  };
 }
 
 export function isCowartAiImageHolder(shape) {
@@ -123,6 +129,9 @@ export async function getCowartRequests(args = {}) {
       requests.push({
         holderId: shape.id, pageId: page.id, status, prompt: typeof shape.props?.prompt === "string" ? shape.props.prompt : null,
         requestId: nonEmptyString(request?.id), request: request ?? null, requestedAt: nonEmptyString(request?.requestedAt),
+        kind: nonEmptyString(request?.kind) || (shape.meta?.cowartVariant ? "variant" : shape.meta?.cowartObjectAction ? "object_action" : "image_generation"),
+        objectAction: request?.objectAction ?? shape.meta?.cowartObjectAction ?? null,
+        variant: request?.variant ?? shape.meta?.cowartVariant ?? null,
         startedAt: nonEmptyString(request?.startedAt), failedAt: nonEmptyString(request?.failedAt), attempt: finiteNumber(request?.attempt, null),
         error: request?.error ?? null, legacy: !request, suggestedGenSize: nearestGenSize(shape.props?.w, shape.props?.h), meta: shape.meta ?? {},
         _sort: { time: requestSortTime(request), pageOrder, shapeOrder, index: String(shape.index ?? "") },

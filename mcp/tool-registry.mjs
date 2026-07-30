@@ -1,6 +1,12 @@
-import { addShapesTool, createHolderTool, updateHolderTool } from "./tool-schemas-author.mjs";
+import {
+  addShapesTool,
+  createHolderTool,
+  createVariantGridTool,
+  selectVariantTool,
+  updateHolderTool,
+} from "./tool-schemas-author.mjs";
 import { exportViewTool, insertImageTool, replaceImageTool } from "./tool-schemas-image.mjs";
-import { makeMaskTool, refineSegmentTool, segmentImageTool } from "./tool-schemas-object.mjs";
+import { extractObjectTool, makeMaskTool, refineSegmentTool, segmentImageTool } from "./tool-schemas-object.mjs";
 import {
   getAnnotationsTool,
   getCanvasTool,
@@ -23,6 +29,9 @@ export function toolDefinitions() {
     makeMaskTool,
     segmentImageTool,
     refineSegmentTool,
+    extractObjectTool,
+    createVariantGridTool,
+    selectVariantTool,
     updateHolderTool,
     getReferencesTool,
   ];

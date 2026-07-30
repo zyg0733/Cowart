@@ -5,6 +5,7 @@ import { COWART_AI_IMAGE_SHAPE } from "./constants.mjs";
 import { findPageIdForShape, getRecord, loadCanvasSnapshot, persistRecords, readSelectionState, readViewState } from "./canvas-client.mjs";
 import { chooseIndex, choosePlacement, firstSelectedShapeId, pageBoundsForShape } from "./geometry.mjs";
 import { resolveImageSource, writeResolvedImage } from "./image-io.mjs";
+import { protectResolvedImage } from "./protected-image.mjs";
 import {
   finiteNumber,
   isSafeChildPath,
@@ -21,7 +22,9 @@ import { assertSourcePrecondition, objectEditProvenance, resolveImageLikeShape, 
 import { makeArrowBinding, SHAPE_BUILDERS } from "./shape-authoring.mjs";
 
 export async function insertCowartImage(args = {}, deps) {
-  const source = await resolveImageSource(args);
+  let source = await resolveImageSource(args);
+  const protectedImage = await protectResolvedImage(args, source, deps);
+  source = protectedImage.image;
   const { cowartUrl, snapshot } = await loadCanvasSnapshot(args);
   const store = snapshot.store;
   const { selection } = await readSelectionState(args);
@@ -39,8 +42,8 @@ export async function insertCowartImage(args = {}, deps) {
 
   const preconditionHash = sourceHashArg(args);
   const preconditionShapeId = nonEmptyString(args.lineageOf) || anchorShapeId;
-  const preconditionShape = preconditionHash && preconditionShapeId ? resolveImageLikeShape(store, getRecord(store, preconditionShapeId, "source shape"), { label: "Writeback source" }) : null;
-  const sourcePrecondition = preconditionShape ? await assertSourcePrecondition(store, args, preconditionShape, preconditionHash, deps) : null;
+  const preconditionShape = !protectedImage.protection && preconditionHash && preconditionShapeId ? resolveImageLikeShape(store, getRecord(store, preconditionShapeId, "source shape"), { label: "Writeback source" }) : null;
+  const sourcePrecondition = protectedImage.protection?.source ?? (preconditionShape ? await assertSourcePrecondition(store, args, preconditionShape, preconditionHash, deps) : null);
   const imageSize = source.dimensions;
   const anchorBounds = anchorShape ? pageBoundsForShape(store, anchorShape) : null;
   const size = displaySizeForInsert({ args, fillAnchor, anchorShape, anchorBounds, imageSize, source });
@@ -74,6 +77,7 @@ export async function insertCowartImage(args = {}, deps) {
     assetFile: filePath, assetUrl: assetRecord.props.src, imageSize: naturalSize, fillAnchor,
     bounds: { x: positioned.x, y: positioned.y, w: size.width, h: size.height },
     lineage: shapeMeta.lineageParent ? { parentShapeId: shapeMeta.lineageParent.id, connectorId: lineageConnectorId, version: shapeMeta.cowartLineage.version, prompt: shapeMeta.cowartLineage.prompt } : null,
+    preserveOutside: protectedImage.protection,
     dryRun: Boolean(args.dryRun),
   };
 }

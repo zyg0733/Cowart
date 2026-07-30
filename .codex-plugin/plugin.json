@@ -1,6 +1,6 @@
 {
   "name": "cowart",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A local infinite canvas for Codex, powered by tldraw and built for structured annotations, current-page image request queues, and canvas-native generation workflows.",
   "author": {
     "name": "ZHONG XIN",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Cowart",
     "shortDescription": "Create, annotate, and generate on a local infinite canvas in Codex.",
-    "longDescription": "Cowart brings a tldraw-powered infinite canvas into Codex for visual planning and creative iteration. Agents can read selected or current-page canvas structure, consume structured annotations with get_cowart_annotations, process current-page AI image holder requests with get_cowart_requests, and use confirmed object segments through refine_cowart_segment and make_cowart_mask. Image assets and Segment Store records stay in the user's project workspace; screenshot export remains available when structured canvas context is not enough.",
+    "longDescription": "Cowart brings a tldraw-powered infinite canvas into Codex for visual planning and creative iteration. Agents can consume structured annotations and FIFO image requests, refine confirmed object segments, extract transparent source layers, create Variant Grids, and deterministically protect pixels outside an object mask. Image assets and Segment Store records stay in the user's project workspace; screenshot export remains available when structured canvas context is not enough.",
     "developerName": "ZHONG XIN",
     "category": "Productivity",
     "websiteURL": "https://www.jiqiren.ai",
@@ -33,6 +33,8 @@
       "AI image generation",
       "Annotation-driven editing",
       "Browser-local object selection",
+      "Object actions and Variant Grid",
+      "Deterministic protected compositing",
       "Project-local persistence"
     ],
     "defaultPrompt": [

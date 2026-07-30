@@ -64,3 +64,23 @@ export const refineSegmentTool = {
   }),
   annotations: writeAnnotations,
 };
+
+export const extractObjectTool = {
+  name: "extract_cowart_object",
+  title: "Extract Cowart Object",
+  description: "Extract a confirmed object from its local source image as a real transparent PNG using the authoritative Segment Store mask. The output is source-derived, not synthetic, and is inserted beside the source image.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    segmentId: { type: "string", description: "Confirmed Segment Store id." },
+    cropToBounds: { type: "boolean", description: "Crop the transparent PNG to the mask bounding box. Defaults to true." },
+    fileName: { type: "string", description: "Optional page-local PNG filename." },
+    placement: { type: "string", enum: ["right", "left", "below"], description: "Placement beside the source. Defaults to right." },
+    margin: { type: "number", description: "Canvas units between source and extracted layer. Defaults to 40." },
+    expectedSourceAssetHash: { type: "string", description: "Require the segment source bytes to still match this SHA-256." },
+    shapeMeta: { type: "object", description: "Additional metadata; trusted object-layer provenance cannot be overridden." },
+    dryRun: { type: "boolean", description: "Plan the extraction and insertion without persisting." },
+  }, { required: ["segmentId"] }),
+  annotations: writeAnnotations,
+};

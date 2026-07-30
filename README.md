@@ -10,10 +10,12 @@ English README: [README.en.md](README.en.md)
 - 在当前项目目录中持久化画布页面、图片资源和已确认的对象 segment。
 - 创建 AI image holder；点击生成后形成当前页请求队列，Codex 顺序认领、生成、填回对应 holder，并显示 queued / generating / failed / filled 生命周期。
 - 读取选中的批注、目标图或已确认对象 segment，让 Codex 生成干净的新图并放到原图旁边；截图只作为结构化画布不可用时的 fallback。
-- 对象选择：选中一张本地图片，切到“对象”工具，点击或拖画目标对象。Cowart 在浏览器本机用 MediaPipe Interactive Segmenter 生成蒙版预览；按 Enter 接受，按 Escape 取消。确认后的 segment 会在刷新后重新加载。
+- 对象选择：选中一张本地图片，切到“对象”工具，点击或拖画目标对象。Cowart 在浏览器本机用 MediaPipe Interactive Segmenter 生成蒙版预览；可用添加/移除笔刷、画笔大小、撤销、重做、重置和候选切换校正，按 Enter 接受，按 Escape 取消。确认后的 segment 会在刷新后重新加载并可继续发布不可变子修订。
+- 对象动作：本地用 `sharp@0.35.0` 提取真实透明 PNG；修改、替换、移除会创建带 segment 来源的 AI holder 请求。Variant Grid 默认四宫格、最多六个，按 FIFO 处理并保留未获胜结果。
+- 保护性合成：`insert_cowart_image` 和 `replace_cowart_image` 支持 `preserveOutside`，蒙版外解码后的 RGBA 字节保持与源图一致。
 - 浏览器本机处理：源图只从 `127.0.0.1` 的 Cowart 页面资源读取。源图不会被 Cowart 上传。首次对象选择需要下载固定版本的模型和 WASM；tldraw 运行时也可能从 `cdn.tldraw.com` 读取前端资源。
-- 通过 Cowart MCP 工具感知与操作画布：`get_cowart_selection`、`insert_cowart_image`、`get_cowart_canvas`、`get_cowart_annotations`、`create_cowart_image_holder`、`replace_cowart_image`、`export_cowart_view`、`add_cowart_shapes`、`make_cowart_mask`、`update_cowart_holder`、`get_cowart_references`、`get_cowart_requests`、`segment_cowart_image`、`refine_cowart_segment`。
-- MCP server 版本：`0.5.0`；当前公开工具数：`14`。
+- 通过 Cowart MCP 工具感知与操作画布：`get_cowart_selection`、`insert_cowart_image`、`get_cowart_canvas`、`get_cowart_annotations`、`create_cowart_image_holder`、`replace_cowart_image`、`export_cowart_view`、`add_cowart_shapes`、`make_cowart_mask`、`update_cowart_holder`、`get_cowart_references`、`get_cowart_requests`、`segment_cowart_image`、`refine_cowart_segment`、`extract_cowart_object`、`create_cowart_variant_grid`、`select_cowart_variant`。
+- MCP server 版本：`0.6.0`；当前公开工具数：`17`。
 
 ## 安装
 
@@ -101,16 +103,17 @@ Codex 会先读取 `get_cowart_selection`，再用 `get_cowart_annotations` 的 
 2. 点击底部工具栏的“对象”。
 3. 在对象上点击，或拖画一条粗略笔画。
 4. 等待“浏览器本机处理”的蒙版预览。
-5. 按 Enter 或点击 Accept 确认；按 Escape 或点击 Cancel 取消。
-6. 让 Codex 使用已确认 segment：
+5. 用 Select 继续生成候选，或用 Add / Remove 笔刷校正；支持画笔大小、撤销、重做和重置。
+6. 按 Enter 或点击 Accept 确认；按 Escape 或点击 Cancel 取消。
+7. 让 Codex 使用已确认 segment：
 
 ```text
 Use the confirmed Cowart object segment on the selected image to edit that object and place a revised version beside it.
 ```
 
-Agent 工作流是：`get_cowart_selection` 或 `get_cowart_canvas` 发现 `confirmedSegments`，可选 `refine_cowart_segment` 扩张、收缩或羽化，调用 `make_cowart_mask({ segmentId })` 生成图像编辑蒙版，再用 `insert_cowart_image` 在源图旁放入新版本并写入 `meta.cowartObjectEdit` 来源信息。`segment_cowart_image` 在没有真实服务端 provider 时会返回 `browser_interaction_required`，不会合成成功结果。
+Agent 工作流是：`get_cowart_selection` 或 `get_cowart_canvas` 发现 `confirmedSegments`；`extract_cowart_object` 在本地提取透明对象层；生成式修改可用 `create_cowart_image_holder.objectAction` 或 `create_cowart_variant_grid` 入队，生成结果通过 `preserveOutside` 保护性写回，最后可用 `select_cowart_variant` 记录 winner。`get_cowart_canvas.lineageTimeline` 只读展示源图、对象动作、变体和 winner。`segment_cowart_image` 在没有真实服务端 provider 时会返回 `browser_interaction_required`，不会合成成功结果。
 
-蒙版是给图像模型的指导，不是严格像素保护。只有单独的 `preserveOutside` 合成步骤才能承诺蒙版外逐像素不变。
+蒙版对图像模型仍只是 guidance；Cowart 不信任模型边缘。启用 `preserveOutside` 后，Cowart 在本地解码源图和候选图并确定性合成，保证蒙版值为 0 的 RGBA 字节与源图一致。
 
 ## 模型、缓存和能力要求
 
@@ -131,10 +134,10 @@ Segment Store 是已确认对象蒙版的唯一真源。候选预览只存在于
 canvas/pages/<page-id>/segments/<segment-id>/
   mask.png
   preview.png
-  segment.json
+  manifest.json
 ```
 
-`segment.json` 记录 source shape、asset id、asset SHA-256、自然尺寸、选择方式、provider、mask hash、bbox、area 和 `parentSegmentId`。校正会创建不可变子 segment。源图资产变化后旧 segment 会变 stale，写回和蒙版生成会用 source hash 拒绝过期结果。
+`manifest.json` 记录 source shape、asset id、asset SHA-256、自然尺寸、选择方式、provider、mask hash、bbox、area 和 `parentSegmentId`。校正会创建不可变子 segment。源图资产变化后旧 segment 会变 stale，写回和蒙版生成会用 source hash 拒绝过期结果。
 
 ## 本地开发
 

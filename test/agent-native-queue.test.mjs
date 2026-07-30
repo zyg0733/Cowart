@@ -10,6 +10,7 @@ import test from "node:test";
 
 const ROOT = resolve(".");
 const MCP = join(ROOT, "mcp", "server.mjs");
+const VITE = join(ROOT, "node_modules", "vite", "bin", "vite.js");
 const PNG_1X1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
@@ -43,7 +44,7 @@ async function withViteHarness(fn) {
   const canvasDir = await mkdtemp(join(tmpdir(), "cowart-agent-native-"));
   const port = await freePort();
   const cowartUrl = `http://127.0.0.1:${port}`;
-  const child = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port)], {
+  const child = spawn(process.execPath, [VITE, "--host", "127.0.0.1", "--port", String(port)], {
     cwd: ROOT,
     env: { ...process.env, COWART_CANVAS_DIR: canvasDir },
     stdio: ["ignore", "pipe", "pipe"],

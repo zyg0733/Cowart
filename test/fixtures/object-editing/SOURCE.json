@@ -1,0 +1,106 @@
+{
+  "license": {
+    "name": "CC0-1.0",
+    "source": "Project-generated deterministic fixture created by .omo/evidence/object-aware-editing/task-1/generate-object-fixture.mjs",
+    "copyright": "No copyright reserved"
+  },
+  "file": {
+    "path": "test/fixtures/object-editing/primary-object.png",
+    "sha256": "b52c89b5ee7d817c8af5e31447c8e83d17f024a6cde773341d9e9232e3f8c33e",
+    "mimeType": "image/png",
+    "dimensions": {
+      "width": 192,
+      "height": 144
+    },
+    "color": {
+      "bitDepth": 8,
+      "type": "RGBA",
+      "interlace": "none"
+    }
+  },
+  "foreground": {
+    "description": "Single high-contrast cyan cup with handle and rim on a warm checker-paper background, suitable for point or scribble foreground segmentation.",
+    "normalizedApproximateBbox": {
+      "xMin": 0.28,
+      "yMin": 0.19,
+      "xMax": 0.82,
+      "yMax": 0.86
+    }
+  },
+  "inputs": {
+    "points": [
+      {
+        "label": "foreground",
+        "x": 0.48,
+        "y": 0.54
+      },
+      {
+        "label": "background",
+        "x": 0.12,
+        "y": 0.15
+      }
+    ],
+    "scribbles": [
+      {
+        "label": "foreground",
+        "points": [
+          {
+            "x": 0.36,
+            "y": 0.39
+          },
+          {
+            "x": 0.43,
+            "y": 0.5
+          },
+          {
+            "x": 0.5,
+            "y": 0.62
+          },
+          {
+            "x": 0.58,
+            "y": 0.73
+          }
+        ]
+      },
+      {
+        "label": "background",
+        "points": [
+          {
+            "x": 0.11,
+            "y": 0.2
+          },
+          {
+            "x": 0.2,
+            "y": 0.78
+          }
+        ]
+      }
+    ]
+  },
+  "expectedMask": {
+    "areaFractionRange": {
+      "min": 0.14,
+      "max": 0.34
+    },
+    "normalizedBboxRange": {
+      "xMin": {
+        "min": 0.24,
+        "max": 0.42
+      },
+      "yMin": {
+        "min": 0.14,
+        "max": 0.34
+      },
+      "xMax": {
+        "min": 0.66,
+        "max": 0.9
+      },
+      "yMax": {
+        "min": 0.72,
+        "max": 0.94
+      }
+    },
+    "nonempty": true,
+    "notes": "Ranges are deliberately broad for real interactive segmenter output while rejecting empty masks and obvious background-only masks."
+  }
+}

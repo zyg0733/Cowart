@@ -83,8 +83,29 @@ ask one focused clarification question when multiple targets could be edited.
    Use a full-image edit when the annotations describe global style, layout, or
    subject changes.
 
-   Use a masked edit when the change is localized. Build the mask with
-   `make_cowart_mask`:
+   Use a masked edit when the change is localized. Prefer confirmed object
+   segments when the selected source exposes `confirmedSegments` from
+   `get_cowart_selection` or `get_cowart_canvas`. Segment Store records are the
+   source of truth; ignore candidate shape/meta records.
+
+  For object-aware edits, use this exact sequence:
+
+  - choose the confirmed segment that matches the intended object
+  - optionally call `refine_cowart_segment` with `expandPixels`,
+     `contractPixels`, or `featherPixels` when the user asks for a broader,
+     tighter, or softer mask
+  - call `make_cowart_mask({ segmentId, returnBase64: true })` to materialize
+     the edit mask
+  - pass the source image, edit mask, and prompt to image generation
+  - insert the result as a neighboring revision with `insert_cowart_image`
+     instead of replacing the source unless the user explicitly asks
+
+   If no confirmed segment exists, ask the user to use the canvas object tool to
+   select and confirm the object. `segment_cowart_image` may return
+   `browser_interaction_required` when no real server provider is configured; do
+   not treat that as a failed generation or invent a segment.
+
+   For rectangle-only edits, build the mask with `make_cowart_mask`:
 
    - pass `targetShapeId` for the image or filled holder
    - use `region` around the annotation tip/target area, or `regionShapeId` when
@@ -92,7 +113,9 @@ ask one focused clarification question when multiple targets could be edited.
    - set `returnBase64: true` when you want source image and mask bytes directly
 
    The mask uses transparent pixels for the editable region and opaque pixels for
-   areas to preserve.
+   areas to preserve, but it is guidance for the image model. Do not promise
+   unchanged outside pixels unless a separate `preserveOutside` compositing step
+   is performed after generation.
 
 6. Generate a new bitmap.
 
@@ -135,6 +158,14 @@ ask one focused clarification question when multiple targets could be edited.
      `prompt` and `version` to `insert_cowart_image`. It records lineage metadata and
      draws a dotted connector from the previous version to the new one, so the
      original → v2 → v3 progression is visible and tracks moves.
+  - For object-aware edits, pass `expectedSourceAssetHash` plus only the
+     caller-safe `objectEdit` fields: `segmentId`, `editMaskSha256`,
+     `operation`, `prompt`, `provider`, `model`, and an ISO timestamp. Cowart
+     derives protected source identity (`sourceShapeId`, `sourceAssetId`,
+     `sourceSha256`) and the segment selection mask hash from the validated
+     Segment Store source, so agents must not invent or override those fields.
+     This provenance is for the neighboring revision and should not expose
+     protected fields as caller-controlled arguments.
    - Place the new image to the right of the anchor with a margin of about `40` canvas units.
    - Match the displayed width and height of the anchor unless the user asks for a different size.
    - If that position would overlap existing content, keep moving right by `anchor width + 40` until the new image is clear.
@@ -214,8 +245,8 @@ ask one focused clarification question when multiple targets could be edited.
 
 ## Region-only edits (masked / inpainting)
 
-When the change is confined to a marked area and the rest of the image must stay
-pixel-identical, prefer a masked edit over regenerating the whole image:
+When the change is confined to a marked area, prefer a masked edit over
+regenerating the whole image:
 
 1. Determine the edit region from selected structured annotations. Use
    `get_cowart_annotations` with `annotationIds`, `targetShapeId`, or
@@ -227,7 +258,10 @@ pixel-identical, prefer a masked edit over regenerating the whole image:
    `returnBase64: true`. It returns the source image + a PNG mask in the image's pixel
    space (transparent = edit, opaque = keep).
 3. Call `image_gen` with the source image, the mask, and a prompt describing only the
-   change. The model edits inside the transparent area and preserves the rest.
+   change. The mask is guidance for the model: transparent pixels mark the edit
+   area and opaque pixels mark the area to preserve. Do not claim pixel-identical
+   outside-mask preservation unless a separate `preserveOutside` compositing
+   step is actually performed after generation.
 4. Write the result back:
    - to revise in place (only when the user wants to edit the original), use
      `replace_cowart_image` with the result `imageBase64` and the target shape id;

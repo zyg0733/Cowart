@@ -1,118 +1,72 @@
 # Cowart 产品改进方案
 
-> 视角：Codex 产品负责人。日期：2026-06-22。
+> 视角：Codex 产品负责人。更新：2026-07-19。
 
-## 1. 这是什么产品
+## 1. 产品定位
 
-Cowart 是 Codex 的**本地无限画布**：tldraw 画布 + 本地 Web 服务 + MCP 工具 + skills（开画布 / 生成图 / 标注改图 / 草图生图）。它的独特定位不是"又一个白板"，而是 **agent 与人共享的视觉工作台**——人在画布上构思、标注，Codex 在同一块画布上生成与迭代。
+Cowart 是 Codex 的本地无限画布：tldraw 画布、本地 Web 服务、MCP 工具和 skills 组成一块人和 agent 共享的视觉工作台。人可以在画布上构思、标注、选择对象；Codex 可以读取同一块画布，生成、修订、导出并留下来源记录。
 
-## 2. 核心洞察：agent 是"半盲半残"的
+## 2. 已落地能力
 
-Cowart 自称 agent-native，但今天的 agent 在画布上能力残缺，破坏了 **agent-native parity（人能做的，agent 也应能做）**：
+| 能力 | UI | MCP / agent |
+| --- | --- | --- |
+| 看见画布内容 | tldraw 画布 | `get_cowart_canvas` |
+| 读取当前选择 | 选择图片、批注、holder | `get_cowart_selection` |
+| 读懂批注 | 批注箭头与文本 | `get_cowart_annotations` |
+| 创建和填充 holder | `cowart-ai-image` 自定义形状 | `create_cowart_image_holder`、`update_cowart_holder`、`replace_cowart_image` |
+| 处理生成队列 | 点击生成 | `get_cowart_requests` |
+| 插入和替换图片 | 页面本地资产 | `insert_cowart_image`、`replace_cowart_image` |
+| 导出视图 | 浏览器渲染或资产快路径 | `export_cowart_view` |
+| 创建图形 | 文本、便签、箭头、几何 | `add_cowart_shapes` |
+| 参考图和风格锚点 | holder 引用 | `get_cowart_references` |
+| 区域和对象蒙版 | 矩形、已确认 segment | `make_cowart_mask` |
+| 对象 segment 校正 | 扩张、收缩、羽化 | `refine_cowart_segment` |
+| 服务端分割入口 | 明确能力状态 | `segment_cowart_image` |
 
-| 能力 | 人（UI） | agent（MCP） | 差距 |
-|------|----------|--------------|------|
-| 看见画布内容 | ✅ | ✅ get_canvas（Phase 1） | — |
-| 读懂标注（批注+箭头指向） | ✅ 肉眼 | ✅ get_annotations（Phase 1） | — |
-| 放入图片 | ✅ | ✅ insert | — |
-| 创建 AI 图片 holder | ✅ 工具栏 | ✅ create_holder（Phase 1） | — |
-| 替换 holder 里的图 | ✅ | ✅ replace_image（Phase 1） | — |
-| 导出区域/页为 PNG | ✅ | ✅ export_view（Phase 2） | — |
-| 处理 holder 生成请求 | ✅ 点击生成 | ✅ get_requests + expectedRequestId（Phase 7） | — |
-| 从选择态读批注编辑意图 | ✅ 肉眼看选区 | ✅ selection-scoped annotations（Phase 7） | — |
+当前 MCP server 版本是 `0.5.0`，公开工具数是 `14`。
 
-**结论**：最高杠杆的改进不是加画布功能，而是**补齐 agent 的感知与动作**，让旗舰"标注→改图"闭环从"截图猜意图"升级为"读结构化数据"。
+## 3. 路线图状态
 
-## 3. 愿景与北极星
+### Phase 1-7：agent-native 画布基础（已落地）
 
-- **愿景**：Cowart 是一块 agent 作为一等公民的视觉工作台——它能**感知**（读板子、读标注）、**行动**（建/换/排）、**反馈**（导出），与人等价。
-- **北极星指标**：每个任务中 agent 成功完成的画布操作数；标注改图闭环"无需截图"的成功率。
+Phase 1 到 Phase 7 已完成结构化画布读取、批注解析、AI holder、导出、agent 作图、多图参考、当前页生成队列、holder 生命周期、选择态批注编辑和图像修订血缘。已落地能力保持加法式兼容；旧画布中的 legacy holder 仍可被读取和填充。
 
-## 4. 路线图（分阶段、可独立交付）
+### Phase 8 core 已落地核心：对象感知编辑
 
-### Phase 1 — agent 感知与核心动作（本次落地）
-新增 MCP 工具，全部**加法式、向后兼容**，复用已有的合并端点/写锁（并发安全）：
-- `get_cowart_canvas`：返回当前页（或指定/全部页）的结构化内容——每个 shape 的 id/类型/页面坐标/文本/资产/是否 holder/是否标注。让 agent 第一次"看见"板子。
-- `get_cowart_annotations`：把批注箭头解析为 `{文本, 指向的目标 shape, 起止点}`。把旗舰流程从"截图"升级为"读数据"。
-- `create_cowart_image_holder`：程序化创建 AI 图片 holder（与 UI 工具完全一致的 frame 记录）。
-- `replace_cowart_image`：替换某图片 shape / holder 内图片的资产（"替换"流程），保留位置尺寸。
+详见 [object-aware-editing-plan.md](object-aware-editing-plan.md)。本轮只交付 Phase 8 core：
 
-配套：升级 `cowart-image-gen` / `cowart-image-edit` skill，优先用上述工具而非手写记录/纯截图。
+- 共享图片坐标和 Segment Store 契约；
+- 页面本地资产 SHA-256 身份与 source precondition；
+- 浏览器本机 `MediaPipe Interactive Segmenter` 点选和粗略 scribble 分割；
+- 确认、取消、错误、unsupported、reload rehydrate 状态；
+- 已确认 segment 摘要加入 canvas / selection 输出；
+- `make_cowart_mask({ segmentId })` 生成图像编辑蒙版；
+- `refine_cowart_segment` 通过本地形态学操作创建不可变子 segment；
+- `insert_cowart_image` / `replace_cowart_image` 支持对象编辑来源校验和旁路修订 provenance。
 
-### Phase 2 — 导出与回带（已落地）
-- `export_cowart_view`：把选区/页/单个 shape 导出为图片文件，agent 可在回答里引用或附带。两种策略：
-  - **资产快路径**（无需浏览器）：单张图片（或 frame holder 内的图）直接从页面资产无损复制，覆盖"把生成图给我一个文件"的主场景。
-  - **浏览器渲染**（页/选区/多 shape 含几何文本箭头）：MCP→服务端长轮询→SSE 指令→浏览器 `editor.toImage` 渲染→base64 回传→MCP 写文件；需画布在浏览器中打开。
-- 验证边界：渲染通道的全链路（含模拟浏览器）已测；tldraw 自身的 `toImage` 栅格化为上游 API，未在无头环境复验。
+明确未交付：GPU sidecar、text segmentation、automatic agent segmentation、full layer recovery、生产级 C2PA、video。它们仍是后续方向，不属于当前 `0.5.0` 的承诺。
 
-### Phase 3 — agent 作图（已落地）
-- `add_cowart_shapes`：让 agent 创建 text / geo（矩形/椭圆/菱形…）/ note（便签）/ line / arrow，输出流程图、注释、排版。
-- 完全无头、无需浏览器：记录由服务端按 tldraw 5 prop 规格构建，对 agent 传入的样式枚举做白名单兜底；批量、`dryRun` 可预览。
-- 验证：每条生成记录都用**真实 tldraw schema 校验**（`schema.types.shape.validator`），无委派边界。
+## 4. 稳定落地原则
 
-### Phase 4 — 打磨（已落地，含重新定范围）
-原计划三项，落地前用证据复核后重排：
-- ✅ **空画布首启引导**：空画布时显示可关闭的引导卡（按 A 建 AI 图片框 / 按 C 批注 / 让 Codex 作图·导出），本地化 + localStorage 记忆关闭。
-- ✅ **Agent 活动提示**：MCP 写入落地经实时刷新后，底部弹出「Codex 更新了画布 · N 个新图形」轻提示，带「查看」可选中并缩放到新图形，强化人机协作主循环。
-- ❌ **bundle 代码分割（砍）**：经核实运行时始终走 vite dev（`start-canvas.sh` exec `npm run dev`），`dist/` 不在热路径，拆包属伪优化；如需仅消除构建告警可后续按需做。
-- ❌ **多页导航（砍）**：tldraw 默认 PageMenu 已提供人类多页导航，叠加 per-page 持久化 + 删除同步即满足；剩余「agent 建/选页」属作图扩展，按需再做。
-- 验证：前端项用真实浏览器（Claude Preview）截图与 DOM 断言验证——空态卡渲染/隐藏、toast 文案与「查看」缩放、无 console 报错。
+1. 加法不破坏：新增能力不破坏既有 MCP 契约。
+2. 画布是状态真源：holder 请求保存在 shape meta；confirmed segment 保存在 Segment Store。
+3. 源图字节是对象蒙版真源：确认、校正、蒙版生成和写回都用 asset SHA-256 拒绝 stale 结果。
+4. 候选不持久化：浏览器内存中的候选预览不是 tldraw shape，也不是 Segment Store 记录。
+5. 浏览器本机优先：Phase 8 core 不上传源图。MediaPipe 模型和 WASM 从 `cdn.jsdelivr.net`、`storage.googleapis.com` 下载；tldraw 前端资源可能从 `cdn.tldraw.com` 读取。源图字节仍只来自 localhost，且没有外部 mutation。
+6. 明确限制：图像模型把 mask 当作 guidance。除非执行单独 `preserveOutside` 合成，否则不承诺蒙版外逐像素不变。
+7. 文档和 skills 与工具面同步：版本、工具数、错误语义和隐私说明必须随代码更新。
 
-### Phase 5 — tldraw × 图像模型深度结合（已落地）
-详见 [phase5-plan.md](phase5-plan.md)：5.0 base64 直收 / 5a 箭头绑定 / 5b 草图→图 /
-5c 区域蒙版编辑 / 5d 迭代血缘 + 活的 AI 图片 holder（自定义 ShapeUtil，含可编辑 prompt、
-生成中态）。
+## 5. 当前低风险项
 
-### Phase 6 — 让 Codex image gen 紧密结合（已落地）
-主题：**image_gen 的每个输入都变成一个画布手势**（"摆出来，别只描述"）。
-- ✅ **参考板 / 多图合成（input_image）**：holder 的 `meta.cowartReferences` 记录参考图；
-  `get_cowart_references` 把它们（含 base64）解析出来喂给 `input_image`。
-- ✅ **风格锚点（style_match）**：`meta.cowartStyleRef` 标记风格参考图，`get_cowart_references`
-  以 `role:"style"` 区分 → 成套产出风格一致。
-- ✅ **画尺寸即定尺寸**：`get_cowart_canvas` 为每个 shape 返回 `suggestedGenSize`（÷16、
-  1:3–3:1、≤3840 的最近合法 gpt-image 尺寸）——画多大生成多大。
-- ✅ **调用可复现**：`replace_cowart_image` / `update_cowart_holder` 接受 `genParams`，
-  存入 `meta.cowartGen`（prompt+参考+尺寸+model+seed）→ 可按原设置重生成/分叉。
-- 验证：无头 13 项（含 `nearestGenSize` 极值裁剪、引用解析角色/base64、provenance 持久化）。
+- 首次对象选择依赖网络下载 `@mediapipe/tasks-vision@0.10.35` WASM 和 Magic Touch 模型；离线时会失败并显示错误。
+- MediaPipe 点选对清晰单主体效果可用，但复杂边缘、透明材质、重叠对象仍需要后续校正能力和更多质量基准。
+- 目前没有记录完整模型质量 benchmark。现有证据只覆盖固定 CC0 fixture 的真实浏览器点选和 scribble。
+- Segment Store 手动删除需要谨慎。被后续修订引用的 segment 应保留。
 
-### Phase 7 — agent-native 编辑与生成队列（已落地，server 0.4.0）
-主题：把"人点击生成"和"人选择批注"变成 agent 可安全消费的画布原生契约。
+## 6. 后续方向
 
-- ✅ **当前页生成请求队列**：新增 `get_cowart_requests`，默认只列当前页 `requested`
-  的 `cowart-ai-image` holder，按 request time + 稳定画布顺序 FIFO 返回。可显式包含
-  `generating` / `failed` 或指定页面，但不默认扫全页。
-- ✅ **请求相关生命周期**：holder 记录 `meta.cowartRequest = { id, requestedAt, attempt }`；
-  agent 用 `update_cowart_holder({ status:"generating", expectedRequestId })` 认领，
-  `replace_cowart_image({ expectedRequestId })` 填回；失败用 `status:"failed"` 写入可重试错误。
-  完成/取消会归档到 `meta.cowartLastRequest`。旧无 id 的 requested holder 仍可无 expected id
-  认领，保持兼容。
-- ✅ **并发/取消安全**：`expectedRequestId` 在 `/api/canvas/records` 写锁内校验；
-  stale claim/fill 不改 canvas，失败的 staged 资产会清理。不会增加后台 daemon、第二队列存储、
-  全局任务面板或并行生成承诺。
-- ✅ **选择态批注编辑默认路径**：`get_cowart_annotations` 支持 `targetShapeId`、
-  `annotationIds`、`selectedOnly`；skill 从 `get_cowart_selection` 开始，选中箭头走
-  annotation ids，选中目标图走 target filter，没有选择时只读当前页并在多目标时问一个问题。
-  截图保留为 fallback。
-- ✅ **filled custom holder 可作为图像源**：filled `cowart-ai-image` holder 可用于导出和
-  `make_cowart_mask`；empty/requested/generating/failed holder 会得到明确错误。
-- ✅ **文档与 skill 同步**：生成、标注改图、草图生图 skill 与中英文 README 同步到
-  server `0.4.0`、MCP 工具数 `12`。
-
-后续仍保留的产品方向：variant grid、多版本面板、版本历史浏览和更强的 reference board UI
-手势。这些是 Phase 7 之上的体验层，不属于本次已交付的队列/选择态契约。
-
-## 5. 稳定落地原则
-
-1. **加法不破坏**：只新增 MCP 工具，不改既有契约；旧 skill/curl 兜底仍可用。
-2. **复用已固化的并发模型**：所有写操作走 `/api/canvas/records` 合并端点 + 写锁 + revision（见 canvas 并发契约），插入旧服务端回退全量 PUT。
-3. **镜像 UI 记录**：MCP 创建的 holder/图片记录与 UI 完全一致，浏览器实时刷新即同步，**零 UI 偏差**。
-4. **可测**：每个工具配集成测试（变更类支持 `dryRun`）。
-5. **与 UI/skill 文档同步**：代码逻辑变更，对应 skill 文档同步更新。
-6. **画布是队列真源**：holder 请求状态保存在 shape meta 中；agent 不维护第二队列或后台任务。
-
-## 6. 验收（Phase 1）
-
-- 四个工具的 `tools/list` 暴露正确、`dryRun` 可计算不落盘。
-- `get_cowart_annotations` 能正确把箭头文本与目标 shape 对应。
-- `create_holder` / `replace_image` 写入与 UI 一致、并发安全、浏览器实时可见。
-- 全部经集成测试通过；`npm run build` 通过；skill 文档同步。
+1. Phase 8.2：添加/移除点、笔刷、候选切换、对象动作和可选 `preserveOutside` 合成。
+2. Phase 8.3：本地 sidecar、text segmentation 和 automatic agent segmentation。
+3. Phase 8.4：对象 shape、基础 provenance export、C2PA 可行性评估。
+4. P1：variant grid、版本时间线、reference board 手势。
+5. P2/P3：full layer recovery、可编辑文字和 video object tracking。

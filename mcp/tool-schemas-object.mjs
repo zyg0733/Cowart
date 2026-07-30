@@ -1,0 +1,66 @@
+import { canvasDirProperty, cowartUrlProperty, idempotentWriteAnnotations, objectSchema, projectDirProperty, writeAnnotations } from "./tool-schema-common.mjs";
+
+export const makeMaskTool = {
+  name: "make_cowart_mask",
+  title: "Make Cowart Edit Mask",
+  description: "Build an inpainting mask for a Cowart image. Maps an edit region (page coords, another shape's bounds, or a confirmed Segment Store id) into the image's pixel space and writes a PNG mask (transparent = edit, opaque = keep). The mask is guidance for image generation, not strict outside-pixel protection. Pass the source image + mask to image generation, then write the result back with insert_cowart_image or replace_cowart_image.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    targetShapeId: { type: "string", description: "Image shape to edit (or a frame holder's image). Falls back to the current selection." },
+    shapeId: { type: "string", description: "Alias for targetShapeId." },
+    region: { type: "object", description: "Edit region in page coords { x, y, w, h } (e.g. a box around an annotation target from get_cowart_annotations)." },
+    regionShapeId: { type: "string", description: "Use another shape's page bounds as the edit region (e.g. a rectangle drawn over the area)." },
+    segmentId: { type: "string", description: "Use a confirmed Segment Store mask. Exactly one of region, regionShapeId, or segmentId is required." },
+    padding: { type: "number", description: "Expand the region by this many page units. Defaults to 0." },
+    invert: { type: "boolean", description: "Flip mask polarity (make the region opaque/kept and the rest transparent/edited). Defaults to false." },
+    outputDir: { type: "string", description: "Directory for the mask PNG. Defaults to <canvasDir>/masks." },
+    maskFileName: { type: "string", description: "Mask file name. Defaults to cowart-mask-<timestamp>.png." },
+    returnBase64: { type: "boolean", description: "Also return maskBase64 and sourceImageBase64, to feed image generation directly. Defaults to false." },
+    dryRun: { type: "boolean", description: "Compute the pixel region and plan without writing the mask file." },
+  }),
+  annotations: idempotentWriteAnnotations,
+};
+
+export const segmentImageTool = {
+  name: "segment_cowart_image",
+  title: "Segment Cowart Image",
+  description: "Request object segmentation for a Cowart image. Without a configured real server-side provider, returns browser_interaction_required and instructs the caller to use the canvas object tool; it never synthesizes segment success.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    targetShapeId: { type: "string", description: "Image shape to segment." },
+    shapeId: { type: "string", description: "Alias for targetShapeId." },
+    mode: { type: "string", enum: ["point", "box", "text", "automatic"], description: "Requested segmentation mode." },
+    points: { type: "array", items: { type: "object" }, description: "Point prompts in source/image space when supported." },
+    box: { type: "object", description: "Box prompt when a real provider supports it." },
+    prompt: { type: "string", description: "Text prompt when a real provider supports it." },
+    provider: { type: "string", description: "Provider id, or auto. Browser-only provider is not callable from MCP." },
+    maxCandidates: { type: "number", description: "Maximum candidates requested from a real provider." },
+    expectedSourceAssetHash: { type: "string", description: "Expected current source SHA-256 for providers that read source bytes." },
+    returnBase64: { type: "boolean", description: "Whether a real provider should return mask bytes inline." },
+  }),
+  annotations: writeAnnotations,
+};
+
+export const refineSegmentTool = {
+  name: "refine_cowart_segment",
+  title: "Refine Cowart Segment",
+  description: "Apply real server-side morphology to a confirmed segment and publish an immutable child segment with parentSegmentId. Revalidates current source shape, page ownership, asset hash, and natural size before publishing.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    segmentId: { type: "string", description: "Confirmed parent segment id." },
+    newSegmentId: { type: "string", description: "Optional child segment id. Generated when omitted." },
+    outputSegmentId: { type: "string", description: "Alias for newSegmentId." },
+    expandPixels: { type: "number", description: "Expand selected pixels by this radius. Default 0." },
+    contractPixels: { type: "number", description: "Contract selected pixels by this radius. Default 0." },
+    featherPixels: { type: "number", description: "Feather selected mask edge. Default 0." },
+    expectedSourceAssetHash: { type: "string", description: "Require the source image asset bytes to still match this SHA-256 before refining." },
+    expectedSourceSha256: { type: "string", description: "Alias for expectedSourceAssetHash." },
+  }),
+  annotations: writeAnnotations,
+};

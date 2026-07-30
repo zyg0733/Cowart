@@ -1,0 +1,6 @@
+export const CANVAS_ENDPOINT = '/api/canvas'
+export const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
+export const EXPORT_RESULT_ENDPOINT = '/api/canvas/export-result'
+export const SELECTION_ENDPOINT = '/api/selection'
+export const VIEW_STATE_ENDPOINT = '/api/view-state'
+export const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'

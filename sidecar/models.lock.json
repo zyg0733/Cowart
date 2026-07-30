@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "models": {
+    "groundingDino": {
+      "repoId": "IDEA-Research/grounding-dino-tiny",
+      "revision": "a2bb814dd30d776dcf7e30523b00659f4f141c71",
+      "weightFile": "model.safetensors",
+      "weightSha256": "1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3",
+      "allowPatterns": [
+        "*.json",
+        "*.txt",
+        "model.safetensors"
+      ]
+    },
+    "sam2": {
+      "repoId": "facebook/sam2.1-hiera-tiny",
+      "revision": "de431c4043854a71d8101e17995dfe596bf101a5",
+      "weightFile": "model.safetensors",
+      "weightSha256": "48c14467e5cf9e51870511feb72c89688e82dd74523142c0538b663e193ac2a7",
+      "allowPatterns": [
+        "*.json",
+        "*.yaml",
+        "model.safetensors"
+      ]
+    }
+  }
+}

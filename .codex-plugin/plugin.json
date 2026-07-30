@@ -1,6 +1,6 @@
 {
   "name": "cowart",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A local infinite canvas for Codex, powered by tldraw and built for structured annotations, current-page image request queues, and canvas-native generation workflows.",
   "author": {
     "name": "ZHONG XIN",

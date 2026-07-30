@@ -23,7 +23,14 @@ export const OBJECT_EDIT_TEST_IDS = {
   modify: 'object-edit.modify',
   replace: 'object-edit.replace',
   remove: 'object-edit.remove',
-  variants: 'object-edit.variants'
+  variants: 'object-edit.variants',
+  sidecarMode: 'object-edit.sidecar-mode',
+  sidecarPrompt: 'object-edit.sidecar-prompt',
+  sidecarRun: 'object-edit.sidecar-run',
+  decompose: 'object-edit.decompose',
+  confirmDecompose: 'object-edit.confirm-decompose',
+  cancelDecompose: 'object-edit.cancel-decompose',
+  decompositionStack: 'object-edit.decomposition-stack'
 }
 
 export const OBJECT_EDIT_COPY = {
@@ -38,6 +45,7 @@ export const OBJECT_EDIT_COPY = {
   unsupported: 'Object editing is not supported in this browser',
   loading: 'Loading local segmenter',
   segmenting: 'Segmenting object locally',
+  sidecar: 'Running local Sidecar',
   preview: 'Preview ready',
   confirmed: 'Segment confirmed',
   stale: 'Source image changed. Retry from the current image.',
@@ -62,6 +70,14 @@ export function bytesToBase64(bytes) {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunk))
   }
   return btoa(binary)
+}
+
+export function base64ToBytes(value) {
+  const encoded = String(value ?? '').replace(/^data:image\/png;base64,/i, '')
+  const binary = atob(encoded)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
 }
 
 export function isLocalPageAssetUrl(src, baseUrl = globalThis.location?.href ?? 'http://127.0.0.1/') {

@@ -1,7 +1,9 @@
 import {
   addShapesTool,
+  createDecompositionTool,
   createHolderTool,
   createVariantGridTool,
+  publishDecompositionArtifactTool,
   selectVariantTool,
   updateHolderTool,
 } from "./tool-schemas-author.mjs";
@@ -32,6 +34,8 @@ export function toolDefinitions() {
     extractObjectTool,
     createVariantGridTool,
     selectVariantTool,
+    createDecompositionTool,
+    publishDecompositionArtifactTool,
     updateHolderTool,
     getReferencesTool,
   ];

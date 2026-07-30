@@ -28,10 +28,12 @@ const TOOL_NAMES = [
   "extract_cowart_object",
   "create_cowart_variant_grid",
   "select_cowart_variant",
+  "create_cowart_decomposition",
+  "publish_cowart_decomposition_artifact",
 ];
 
 const REQUIRED_README_PHRASES = [
-  "MCP server version: `0.6.0`; current public tool count: `17`.",
+  "MCP server version: `0.7.0`; current public tool count: `19`.",
   "@mediapipe/tasks-vision@0.10.35",
   "cdn.jsdelivr.net",
   "cdn.tldraw.com",
@@ -40,6 +42,8 @@ const REQUIRED_README_PHRASES = [
   "Segment Store",
   "mask remains guidance",
   "browser-local",
+  "confirmUpload=true",
+  "depth_hint",
 ];
 
 async function read(path) {
@@ -52,10 +56,10 @@ test("Given release metadata When Cowart version is read Then package plugin ser
   const constants = await read("mcp/constants.mjs");
   const readme = await read("README.en.md");
 
-  assert.equal(packageJson.version, "0.6.0");
+  assert.equal(packageJson.version, "0.7.0");
   assert.equal(pluginJson.version, packageJson.version);
   assert.equal(packageJson.engines?.node, ">=20.19.0");
-  assert.match(constants, /SERVER_VERSION = "0\.6\.0"/);
+  assert.match(constants, /SERVER_VERSION = "0\.7\.0"/);
   assert.ok(readme.includes(`MCP server version: \`${packageJson.version}\``));
 });
 
@@ -63,7 +67,7 @@ test("Given public docs When object-aware editing is documented Then README pari
   const chinese = await read("README.md");
   const english = await read("README.en.md");
 
-  assert.match(chinese, /MCP server 版本：`0\.6\.0`；当前公开工具数：`17`。/);
+  assert.match(chinese, /MCP server 版本：`0\.7\.0`；当前公开工具数：`19`。/);
   for (const phrase of REQUIRED_README_PHRASES) assert.ok(english.includes(phrase), phrase);
   for (const toolName of TOOL_NAMES) {
     assert.ok(chinese.includes(toolName), `README.md missing ${toolName}`);
@@ -82,12 +86,12 @@ test("Given public docs When object-aware editing is documented Then README pari
   }
 });
 
-test("Given product docs When Phase 8 status is described Then object actions are delivered and sidecar work remains explicit", async () => {
+test("Given product docs When Phase 8 status is described Then object actions Sidecar and decomposition are explicit", async () => {
   const improvement = await read("docs/product/cowart-improvement-plan.md");
   const plan = await read("docs/product/object-aware-editing-plan.md");
 
-  assert.match(improvement, /Phase 8\.1-8\.2 已落地/);
-  assert.match(plan, /状态：Phase 8\.1 core 与 Phase 8\.2 对象动作已落地/);
+  assert.match(improvement, /Phase 8\.1-8\.4 已落地/);
+  assert.match(plan, /状态：Phase 8\.1-8\.4 已落地/);
   for (const delivered of [
     "MediaPipe Interactive Segmenter",
     "Segment Store",
@@ -96,10 +100,14 @@ test("Given product docs When Phase 8 status is described Then object actions ar
     "create_cowart_variant_grid",
     "preserveOutside",
     "sharp@0.35.0",
+    "create_cowart_decomposition",
+    "publish_cowart_decomposition_artifact",
+    "generatedSegmentId",
+    "publish=true",
   ]) {
     assert.ok(plan.includes(delivered), delivered);
   }
-  for (const deferred of ["GPU sidecar", "text segmentation", "automatic agent segmentation", "full layer recovery", "C2PA", "video"]) {
+  for (const deferred of ["full layer recovery", "C2PA", "video"]) {
     assert.match(plan, new RegExp(`${deferred}[^\\n]*(deferred|暂缓|后续)`, "i"), deferred);
   }
   assert.doesNotMatch(plan, /mock provider|mock-provider|模拟 provider/i);

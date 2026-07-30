@@ -89,7 +89,35 @@ at a time, and leave the canvas as the source of truth.
    claimable only without `expectedRequestId`; do not invent an expected id for
    them. Their next retry will create correlated request metadata.
 
-3. Resolve prompt, size, and references.
+3. Branch scene-decomposition requests.
+
+   When `request.kind` is `scene_decomposition`, do not use the one-image holder
+   flow below. The request already contains a user-confirmed upload record.
+   Claim it with the same `expectedRequestId`, then call
+   `get_cowart_references({ decompositionId, returnBase64: true })`.
+
+   Build a compact scene graph whose objects record name, front/back ordering,
+   relations, visible fraction, and the matching confirmed `segmentId`. By
+   default make exactly two `image_gen` calls:
+
+   - `depth_hint`: a relative grayscale depth-order reference. It is inferred,
+     not metric depth and not a mask.
+   - `clean_plate`: the source-sized background with the selected foreground
+     objects plausibly removed. It is synthetic, not recovered source content.
+
+   Insert each generated bitmap at the source natural aspect ratio and register
+   it with `publish_cowart_decomposition_artifact`. Include the scene graph on
+   either publish call. Use provider provenance `codex-image_gen`; never claim a
+   fixed GPT Image version when the Codex platform does not expose it.
+
+   A `visible_object_layer` must come from `extract_cowart_object`, not image
+   generation. A `completed_object` is an explicit per-object request: generate
+   the complete object, insert it, run SAM 2 segmentation on that generated
+   image with `segment_cowart_image({ publish: true })`, extract that generated
+   segment, then publish the transparent result with `generatedSegmentId`.
+   Do not create these extra cloud calls automatically.
+
+4. Resolve prompt, size, and references.
 
    Use the queue item prompt first, then the holder's `props.prompt` from
    `get_cowart_canvas` / `get_cowart_selection` if needed. Use
@@ -101,7 +129,7 @@ at a time, and leave the canvas as the source of truth.
    `input_image` references and the item tagged `role: "style"` as the style
    reference when the image model supports style matching.
 
-4. Generate the bitmap.
+5. Generate the bitmap.
 
    Use the built-in `imagegen` skill unless the user explicitly requests another
    image path. Include requested visible copy, labels, poster text, UI text, or
@@ -112,7 +140,7 @@ at a time, and leave the canvas as the source of truth.
    directly to Cowart as `imageBase64` or `imageDataUrl`. Only resolve a local
    file when the image tool actually returns one for this generation.
 
-5. Fill the claimed holder.
+6. Fill the claimed holder.
 
    For a current `cowart-ai-image` holder, call `replace_cowart_image` with the
    same request id used for the claim:
@@ -137,7 +165,7 @@ at a time, and leave the canvas as the source of truth.
    with no expected id. Discard that generated result or insert it elsewhere only
    if the user explicitly asks.
 
-6. Mark failed requests explicitly.
+7. Mark failed requests explicitly.
 
    If generation fails after a successful claim, call:
 
@@ -154,7 +182,7 @@ at a time, and leave the canvas as the source of truth.
    failure update mismatches, another action already superseded the request; do
    not overwrite it.
 
-7. Direct selected-holder and standalone workflows.
+8. Direct selected-holder and standalone workflows.
 
    If the user directly asks to fill the selected holder and no queue item is
    pending, read `get_cowart_selection` and `get_cowart_canvas`. For current
@@ -168,7 +196,7 @@ at a time, and leave the canvas as the source of truth.
    Use a selected non-holder as an anchor if it is useful context; otherwise place
    the image in a clear current-page area.
 
-8. Verify the result.
+9. Verify the result.
 
    Refresh or let the browser hot-reload, then confirm the holder id, final
    status, request archive, inserted asset path, and final dimensions. For a

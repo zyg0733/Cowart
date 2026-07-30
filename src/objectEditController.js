@@ -5,7 +5,8 @@ import {
   fetchObjectSegmentMask,
   getObjectSegment,
   listObjectSegments,
-  refineObjectSegment
+  refineObjectSegment,
+  segmentObjectWithSidecar
 } from './objectEditApi.js'
 import {
   getObjectEditAvoidRects,
@@ -30,6 +31,7 @@ import {
   OBJECT_EDIT_COPY,
   OBJECT_EDIT_TEST_IDS,
   OBJECT_EDIT_TOOL_ID,
+  base64ToBytes,
   buildObjectEditSource,
   bytesToBase64,
   createSegmentId,
@@ -57,6 +59,9 @@ export function useCowartObjectEditController() {
   const [brushSize, setBrushSize] = useState(32)
   const [selectedSegmentId, setSelectedSegmentId] = useState(null)
   const [segments, setSegments] = useState([])
+  const [segmentationMode, setSegmentationMode] = useState('point')
+  const [sidecarPrompt, setSidecarPrompt] = useState('')
+  const [showDecompositionConfirm, setShowDecompositionConfirm] = useState(false)
   const toolState = useValue('object edit state', () => getObjectEditToolState(editor), [editor])
   const currentTool = useValue('object edit active tool', () => editor.getCurrentToolId(), [editor])
   const selectionKey = useValue('object edit selection key', () => editor.getSelectedShapeIds().join('|'), [editor])
@@ -70,6 +75,25 @@ export function useCowartObjectEditController() {
     const ids = editor.getCurrentPageShapeIds?.() ?? []
     const shapes = Array.from(ids, (id) => editor.getShape(id)).filter(Boolean)
     return buildObjectEditLineage(shapes, source?.shapeId)
+  }, [editor, source?.shapeId])
+  const decomposition = useValue('scene decomposition stack', () => {
+    if (!source?.shapeId) return null
+    const ids = editor.getCurrentPageShapeIds?.() ?? []
+    const shapes = Array.from(ids, (id) => editor.getShape(id)).filter(Boolean)
+    const holder = shapes
+      .filter((shape) => shape.meta?.cowartDecomposition?.sourceShapeId === source.shapeId)
+      .sort((left, right) => String(left.meta.cowartDecomposition.createdAt).localeCompare(String(right.meta.cowartDecomposition.createdAt)))
+      .at(-1)
+    if (!holder) return null
+    const manifest = holder.meta.cowartDecomposition
+    return {
+      holderId: holder.id,
+      manifest,
+      artifacts: (Array.isArray(manifest.artifacts) ? manifest.artifacts : []).map((artifact) => {
+        const shape = editor.getShape(artifact.imageShapeId)
+        return { ...artifact, visible: Boolean(shape && shape.opacity !== 0) }
+      })
+    }
   }, [editor, source?.shapeId])
 
   const resetWorker = useCallback(() => {
@@ -131,6 +155,63 @@ export function useCowartObjectEditController() {
   }, [refreshSegments])
 
   useEffect(() => {
+    setShowDecompositionConfirm(false)
+  }, [source?.shapeId])
+
+  const runSidecarSegmentation = useCallback(async () => {
+    if (!source || !['text', 'automatic'].includes(segmentationMode)) return
+    if (segmentationMode === 'text' && !sidecarPrompt.trim()) return
+    tokenRef.current += 1
+    abortRef.current?.abort()
+    const token = tokenRef.current
+    const controller = new AbortController()
+    abortRef.current = controller
+    clearCandidate()
+    setError('')
+    setPhase('sidecar')
+    try {
+      const result = await segmentObjectWithSidecar({ signal: controller.signal }, {
+        source,
+        mode: segmentationMode,
+        prompt: segmentationMode === 'text' ? sidecarPrompt.trim() : undefined,
+        maxCandidates: 8
+      })
+      if (token !== tokenRef.current || !currentSourceMatches(editor, source)) return
+      const nextCandidates = []
+      for (const item of result.candidates ?? []) {
+        const maskPng = base64ToBytes(item.maskBase64)
+        const pixels = await decodeSelectionMask(maskPng, source.width, source.height)
+        nextCandidates.push({
+          source,
+          selection: {
+            mode: segmentationMode,
+            prompt: segmentationMode === 'text' ? sidecarPrompt.trim() : undefined,
+            candidateId: item.candidateId,
+            score: item.score
+          },
+          provider: result.provider,
+          maskPng,
+          bbox: item.bbox,
+          area: item.area,
+          history: createMaskHistory({ width: source.width, height: source.height, pixels }),
+          corrections: []
+        })
+      }
+      if (nextCandidates.length === 0) throw new Error('Sidecar returned no object candidates.')
+      setCandidates(nextCandidates.slice(0, 8))
+      setCandidateIndex(0)
+      setInteractionMode('select')
+      setPhase('preview')
+    } catch (sidecarError) {
+      if (sidecarError?.name === 'AbortError' || sidecarError?.code === 'sidecar_cancelled') return
+      setError(sidecarError.message || OBJECT_EDIT_COPY.error)
+      setPhase(sidecarError.code === 'source_asset_changed' ? 'stale' : 'error')
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null
+    }
+  }, [clearCandidate, editor, segmentationMode, sidecarPrompt, source])
+
+  useEffect(() => {
     if (active) return
     resetWorker()
     clearCandidate()
@@ -146,7 +227,7 @@ export function useCowartObjectEditController() {
   }, [candidate, clearCandidate, editor, selectionKey])
 
   useEffect(() => {
-    if (!active || !support.ok) return
+    if (!active || !support.ok || segmentationMode !== 'point') return
     const onInput = async (event) => {
       if (!source || !picked || !mapper) return
       const imageSelection = normalizeObjectEditInput(event.detail, mapper, source)
@@ -239,7 +320,7 @@ export function useCowartObjectEditController() {
       window.removeEventListener('cowart-object-edit-input', onInput)
       window.removeEventListener('cowart-object-edit-cancel', onCancel)
     }
-  }, [active, cancel, clearCandidate, editor, mapper, picked, resetWorker, source, support.ok])
+  }, [active, cancel, clearCandidate, editor, mapper, picked, resetWorker, segmentationMode, source, support.ok])
 
   useEffect(() => () => {
     resetWorker()
@@ -304,7 +385,17 @@ export function useCowartObjectEditController() {
               }
             : null
         },
-        provider: { id: 'mediapipe-interactive', runtime: 'browser', processing: 'local', model: 'magic_touch', version: 'float32/1' }
+        provider: candidate.provider ?? { id: 'mediapipe-interactive', runtime: 'browser', processing: 'local', model: 'magic_touch', version: 'float32/1' }
+      }
+      if (candidate.corrections.length > 0 && !candidate.parentSegmentId) {
+        payload.selection.corrections.upstreamProvider = payload.provider
+        payload.provider = {
+          id: 'cowart-browser-mask-brush',
+          runtime: 'browser',
+          processing: 'local',
+          model: null,
+          version: '1'
+        }
       }
       if (candidate.parentSegmentId) {
         payload.selection = {
@@ -482,6 +573,7 @@ export function useCowartObjectEditController() {
     }
     const bounds = editor.getShapePageBounds(picked.shape)
     const origin = { x: (bounds?.maxX ?? bounds?.x + bounds?.w ?? 0) + 40, y: bounds?.y ?? 0 }
+    const holderIds = []
     editor.markHistoryStoppingPoint('cowart-variant-grid-request')
     for (let index = 0; index < 4; index += 1) {
       const variant = { gridId, index, count: 4 }
@@ -493,7 +585,9 @@ export function useCowartObjectEditController() {
         objectAction: action,
         variant
       }
-      createAiImageHolderShape(editor, createShapeId(), {
+      const holderId = createShapeId()
+      holderIds.push(holderId)
+      createAiImageHolderShape(editor, holderId, {
         parentId: editor.getCurrentPageId(),
         x: origin.x + (index % 2) * 344,
         y: origin.y + Math.floor(index / 2) * 244,
@@ -510,9 +604,85 @@ export function useCowartObjectEditController() {
         }
       })
     }
+    const visibleBounds = [bounds, ...holderIds.map((id) => editor.getShapePageBounds(id))].filter(Boolean)
+    if (visibleBounds.length > 0) {
+      const left = Math.min(...visibleBounds.map((item) => item.minX ?? item.x))
+      const top = Math.min(...visibleBounds.map((item) => item.minY ?? item.y))
+      const right = Math.max(...visibleBounds.map((item) => item.maxX ?? item.x + item.w))
+      const bottom = Math.max(...visibleBounds.map((item) => item.maxY ?? item.y + item.h))
+      editor.zoomToBounds(
+        { x: left, y: top, w: right - left, h: bottom - top },
+        { inset: 72, targetZoom: Math.min(1, editor.getZoomLevel()), animation: { duration: 220 } }
+      )
+    }
   }, [editor, picked, segments, selectedSegmentId, source])
 
-  const status = !support.ok ? support.message : phase === 'idle' ? (OBJECT_EDIT_COPY[toolState.kind] ?? OBJECT_EDIT_COPY.ready) : (OBJECT_EDIT_COPY[phase] ?? OBJECT_EDIT_COPY.ready)
+  const queueSceneDecomposition = useCallback(() => {
+    if (segments.length === 0 || !source || !picked) return
+    const createdAt = new Date().toISOString()
+    const decompositionId = `decomposition:${createObjectActionRequestId()}`
+    const segmentIds = segments.map((segment) => segment.segmentId)
+    const manifest = {
+      id: decompositionId,
+      sourceShapeId: source.shapeId,
+      sourceSha256: source.assetSha256,
+      status: 'requested',
+      segmentIds,
+      sceneGraph: null,
+      artifacts: [],
+      provider: 'codex-image_gen',
+      createdAt,
+      completedAt: null,
+      revision: 1
+    }
+    const requestDescriptor = {
+      id: decompositionId,
+      sourceShapeId: source.shapeId,
+      sourceSha256: source.assetSha256,
+      segmentIds,
+      artifactKinds: ['depth_hint', 'clean_plate'],
+      uploadConfirmedAt: createdAt
+    }
+    const request = {
+      id: createObjectActionRequestId(),
+      requestedAt: createdAt,
+      attempt: 1,
+      kind: 'scene_decomposition',
+      decomposition: requestDescriptor
+    }
+    const bounds = editor.getShapePageBounds(picked.shape)
+    const holderId = createShapeId()
+    editor.markHistoryStoppingPoint('cowart-scene-decomposition-request')
+    createAiImageHolderShape(editor, holderId, {
+      parentId: editor.getCurrentPageId(),
+      x: (bounds?.maxX ?? bounds?.x + bounds?.w ?? 0) + 40,
+      y: bounds?.y ?? 0,
+      meta: {
+        cowartDecomposition: manifest,
+        cowartRequest: request
+      },
+      props: {
+        w: bounds?.w ?? picked.shape.props.w,
+        h: bounds?.h ?? picked.shape.props.h,
+        name: 'Scene decomposition',
+        prompt: 'Create a grayscale relative depth hint and a clean plate with the confirmed foreground objects removed.',
+        status: 'requested'
+      }
+    })
+    setShowDecompositionConfirm(false)
+  }, [editor, picked, segments, source])
+
+  const setDecompositionArtifactVisible = useCallback((imageShapeId, visible) => {
+    const shape = editor.getShape(imageShapeId)
+    if (!shape) return
+    editor.updateShape({ id: shape.id, type: shape.type, opacity: visible ? 1 : 0 })
+  }, [editor])
+
+  const status = segmentationMode === 'point' && !support.ok
+    ? support.message
+    : phase === 'idle'
+      ? (OBJECT_EDIT_COPY[toolState.kind] ?? OBJECT_EDIT_COPY.ready)
+      : (OBJECT_EDIT_COPY[phase] ?? OBJECT_EDIT_COPY.ready)
   const previewLayout = candidate && mapper ? getPreviewLayout({ editor, mapper, source: candidate.source }) : null
   const dock = getObjectEditPanelDock({
     viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -531,6 +701,7 @@ export function useCowartObjectEditController() {
     candidate: candidate ? { ...candidate, maskUrl } : null,
     candidateCount: candidates.length,
     candidateIndex,
+    decomposition,
     dock,
     error,
     interactionMode,
@@ -540,14 +711,23 @@ export function useCowartObjectEditController() {
     previousCandidate,
     previewLayout,
     queueObjectAction,
+    queueSceneDecomposition,
     queueVariantGrid,
     redo,
     resetMask,
     segments,
     selectedSegmentId,
+    segmentationMode,
     selectSegment,
     setBrushSize,
+    setDecompositionArtifactVisible,
     setInteractionMode,
+    setSegmentationMode,
+    setShowDecompositionConfirm,
+    setSidecarPrompt,
+    showDecompositionConfirm,
+    sidecarPrompt,
+    runSidecarSegmentation,
     status,
     support,
     undo

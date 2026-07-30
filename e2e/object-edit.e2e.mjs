@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { encodeCanonicalMaskPng } from "../shared/cowart-segment-mask.mjs";
 import {
@@ -8,6 +11,7 @@ import {
   applyTransformedFixtureStack,
   assertSegmentRange,
   currentImageMappingSnapshot,
+  freePort,
   loadFixture,
   previewAlignmentSnapshot,
   screenPoint,
@@ -19,6 +23,59 @@ import {
 } from "./object-edit-helpers.mjs";
 
 const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite";
+
+async function startFixtureSidecar(width, height) {
+  const home = await mkdtemp(join(tmpdir(), "cowart-sidecar-e2e-"));
+  const token = "cowart-sidecar-e2e-token-abcdefghijklmnopqrstuvwxyz";
+  const tokenFile = join(home, "token");
+  await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
+  await chmod(tokenFile, 0o600);
+  const calls = [];
+  const sidecar = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    calls.push({ authorization: request.headers.authorization, mode: body.mode, prompt: body.prompt ?? null });
+    const firstPixels = new Uint8Array(width * height);
+    const secondPixels = new Uint8Array(width * height);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        firstPixels[y * width + x] = x < width / 2 ? 255 : 0;
+        secondPixels[y * width + x] = y < height / 2 ? 255 : 0;
+      }
+    }
+    const masks = body.mode === "automatic"
+      ? [encodeCanonicalMaskPng({ width, height, pixels: firstPixels }), encodeCanonicalMaskPng({ width, height, pixels: secondPixels })]
+      : [encodeCanonicalMaskPng({ width, height, pixels: firstPixels })];
+    response.statusCode = request.headers.authorization === `Bearer ${token}` ? 200 : 401;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      naturalSize: { width, height },
+      provider: { model: "sam2.1-hiera-tiny", version: "0.7.0", device: "cpu" },
+      candidates: masks.map((mask, index) => ({
+        candidateId: `candidate:${index + 1}`,
+        score: 0.9 - index * 0.1,
+        label: body.prompt ?? null,
+        bbox: { x: 0, y: 0, w: width, h: height },
+        area: firstPixels.filter((value) => value > 0).length,
+        maskBase64: mask.toString("base64"),
+      })),
+    }));
+  });
+  const port = await freePort();
+  sidecar.listen(port, "127.0.0.1");
+  await once(sidecar, "listening");
+  return {
+    calls,
+    tokenFile,
+    url: `http://127.0.0.1:${port}`,
+    async close() {
+      sidecar.close();
+      await once(sidecar, "close");
+      await rm(home, { recursive: true, force: true });
+    },
+  };
+}
 
 async function activateTool(page) {
   await page.getByTestId("object-edit.tool").click();
@@ -306,11 +363,121 @@ test("confirmed objects queue object actions and a four-up Variant Grid from the
     });
     expect(actions).toEqual(["modify"]);
 
+    await page.waitForTimeout(300);
     for (const viewport of [{ width: 375, height: 812 }, { width: 768, height: 900 }, { width: 1280, height: 900 }]) {
       await page.setViewportSize(viewport);
+      await page.evaluate(() => {
+        const editor = window.__cowartEditor;
+        const bounds = editor.getCurrentPageBounds();
+        if (bounds) editor.zoomToBounds(bounds, { inset: 72, immediate: true });
+      });
       await page.screenshot({ path: join(EVIDENCE, `variant-grid-${viewport.width}.png`), fullPage: true });
     }
   } finally {
     await stopCowartServer(server);
+  }
+});
+
+test("Sidecar text and automatic modes require confirmation and expose a decomposition stack", async ({ page }) => {
+  const { bytes, manifest } = await loadFixture();
+  const fixtureSidecar = await startFixtureSidecar(manifest.file.dimensions.width, manifest.file.dimensions.height);
+  const server = await startCowartServer({
+    env: {
+      COWART_SIDECAR_URL: fixtureSidecar.url,
+      COWART_SIDECAR_TOKEN_FILE: fixtureSidecar.tokenFile,
+    },
+  });
+  try {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto(server.cowartUrl);
+    await page.evaluate(() => localStorage.setItem("cowart-onboarding-dismissed", "1"));
+    await page.waitForFunction(() => Boolean(window.__cowartEditor));
+    await seedFixtureThroughEditor(page, server.cowartUrl, bytes, manifest);
+    await page.reload();
+    await selectFixture(page);
+    await activateTool(page);
+
+    await page.getByRole("button", { name: "Auto", exact: true }).click();
+    await page.getByTestId("object-edit.sidecar-run").click();
+    await expect(page.getByText("1 / 2", { exact: true })).toBeVisible();
+    await page.getByTestId("object-edit.next-candidate").click();
+    await expect(page.getByText("2 / 2", { exact: true })).toBeVisible();
+    await page.getByTestId("object-edit.accept").click();
+    await expect(page.getByTestId("object-edit.status")).toContainText(/Segment confirmed/i);
+
+    await page.getByRole("button", { name: "Text", exact: true }).click();
+    await page.getByTestId("object-edit.sidecar-prompt").fill("foreground product");
+    await page.getByTestId("object-edit.sidecar-run").click();
+    await expect(page.locator(".cowart-object-edit-panel--preview")).toBeVisible();
+    await page.getByTestId("object-edit.accept").click();
+    await expect(page.getByTestId("object-edit.status")).toContainText(/Segment confirmed/i);
+    expect(fixtureSidecar.calls.map((call) => call.mode)).toEqual(["automatic", "text"]);
+    expect(fixtureSidecar.calls[1].prompt).toBe("foreground product");
+    expect(fixtureSidecar.calls.every((call) => call.authorization.startsWith("Bearer cowart-sidecar-e2e-token-"))).toBeTruthy();
+
+    await page.getByTestId("object-edit.decompose").click();
+    await expect(page.getByRole("alertdialog", { name: "Confirm image upload" })).toBeVisible();
+    await page.getByTestId("object-edit.cancel-decompose").click();
+    const countAfterCancel = await page.evaluate(() => (
+      Array.from(window.__cowartEditor.getCurrentPageShapeIds(), (id) => window.__cowartEditor.getShape(id))
+        .filter((shape) => shape?.meta?.cowartRequest?.kind === "scene_decomposition")
+        .length
+    ));
+    expect(countAfterCancel).toBe(0);
+
+    await page.getByTestId("object-edit.decompose").click();
+    await page.getByTestId("object-edit.confirm-decompose").click();
+    const decomposition = await page.evaluate(() => {
+      const editor = window.__cowartEditor;
+      const shapes = Array.from(editor.getCurrentPageShapeIds(), (id) => editor.getShape(id)).filter(Boolean);
+      const holder = shapes.find((shape) => shape.meta?.cowartRequest?.kind === "scene_decomposition");
+      const artifactId = "shape:e2e-depth";
+      editor.createShape({
+        id: artifactId,
+        type: "image",
+        x: 560,
+        y: 100,
+        props: { assetId: "asset:fixture", w: 384, h: 288 },
+      });
+      editor.updateShape({
+        id: holder.id,
+        type: holder.type,
+        meta: {
+          ...holder.meta,
+          cowartDecomposition: {
+            ...holder.meta.cowartDecomposition,
+            status: "generating",
+            revision: 2,
+            artifacts: [{
+              kind: "depth_hint",
+              imageShapeId: artifactId,
+              sourceSegmentIds: [],
+              synthetic: true,
+              provider: "codex-image_gen",
+              artifactSha256: "1".repeat(64),
+            }],
+          },
+        },
+      });
+      return {
+        holderId: holder.id,
+        requestKind: holder.meta.cowartRequest.kind,
+        uploadConfirmedAt: holder.meta.cowartRequest.decomposition.uploadConfirmedAt,
+        segmentIds: holder.meta.cowartRequest.decomposition.segmentIds,
+      };
+    });
+    expect(decomposition.requestKind).toBe("scene_decomposition");
+    expect(Number.isNaN(Date.parse(decomposition.uploadConfirmedAt))).toBeFalsy();
+    expect(decomposition.segmentIds).toHaveLength(2);
+    await expect(page.getByTestId("object-edit.decomposition-stack")).toBeVisible();
+    const layerToggle = page.getByTestId("object-edit.decomposition-stack").getByRole("checkbox");
+    await layerToggle.uncheck();
+    const opacity = await page.evaluate(() => window.__cowartEditor.getShape("shape:e2e-depth").opacity);
+    expect(opacity).toBe(0);
+
+    await page.screenshot({ path: join(EVIDENCE, "sidecar-decomposition-375.png"), fullPage: true });
+  } finally {
+    await stopCowartServer(server);
+    await fixtureSidecar.close();
   }
 });

@@ -23,6 +23,12 @@ export async function extractCowartObject(args = {}, deps) {
     segmentStore.binary(segmentId, "mask.png"),
   ]);
   const cropToBounds = args.cropToBounds !== false;
+  const synthetic = (
+    sourceShape.meta?.cowartDecompositionArtifact?.synthetic === true ||
+    sourceShape.meta?.cowartObjectEdit?.provider === "codex-image_gen" ||
+    sourceShape.meta?.cowartObjectAction?.synthetic === true ||
+    sourceShape.meta?.cowartVariant?.synthetic === true
+  );
   const extracted = await extractMaskedObject({
     sourceBytes,
     selectionMaskBytes,
@@ -63,7 +69,7 @@ export async function extractCowartObject(args = {}, deps) {
         segmentId,
         sourceShapeId: source.shapeId,
         sourceSha256: source.assetSha256,
-        synthetic: false,
+        synthetic,
         crop: extracted.bbox,
       },
     },
@@ -73,7 +79,7 @@ export async function extractCowartObject(args = {}, deps) {
     segmentId,
     sourceShapeId: source.shapeId,
     sourceSha256: source.assetSha256,
-    synthetic: false,
+    synthetic,
     extraction: {
       naturalSize: { width: extracted.width, height: extracted.height },
       sourceNaturalSize: { width: source.width, height: source.height },

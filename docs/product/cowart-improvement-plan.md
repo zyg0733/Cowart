@@ -1,6 +1,6 @@
 # Cowart 产品改进方案
 
-> 视角：Codex 产品负责人。更新：2026-07-19。
+> 视角：Codex 产品负责人。更新：2026-07-27。
 
 ## 1. 产品定位
 
@@ -26,8 +26,10 @@ Cowart 是 Codex 的本地无限画布：tldraw 画布、本地 Web 服务、MCP
 | 透明对象提取 | 对象列表与来源时间线 | `extract_cowart_object` |
 | 保护性合成 | 对象动作 holder | `insert_cowart_image.preserveOutside`、`replace_cowart_image.preserveOutside` |
 | Variant Grid | 四宫格、winner、结果保留 | `create_cowart_variant_grid`、`select_cowart_variant` |
+| Sidecar 分割 | point、box、text、automatic | `segment_cowart_image({ publish })` |
+| 轻量场景分解 | depth hint、clean plate、对象层、合成 | `create_cowart_decomposition`、`publish_cowart_decomposition_artifact` |
 
-当前 MCP server 版本是 `0.6.0`，公开工具数是 `17`。
+当前 MCP server 版本是 `0.7.0`，公开工具数是 `19`。
 
 ## 3. 路线图状态
 
@@ -35,7 +37,7 @@ Cowart 是 Codex 的本地无限画布：tldraw 画布、本地 Web 服务、MCP
 
 Phase 1 到 Phase 7 已完成结构化画布读取、批注解析、AI holder、导出、agent 作图、多图参考、当前页生成队列、holder 生命周期、选择态批注编辑和图像修订血缘。已落地能力保持加法式兼容；旧画布中的 legacy holder 仍可被读取和填充。
 
-### Phase 8.1-8.2 已落地：对象感知编辑与对象动作
+### Phase 8.1-8.4 已落地：对象感知编辑、Sidecar 与混合场景分解
 
 详见 [object-aware-editing-plan.md](object-aware-editing-plan.md)。当前交付：
 
@@ -54,7 +56,17 @@ Phase 1 到 Phase 7 已完成结构化画布读取、批注解析、AI holder、
 - Variant Grid 默认四个、最多六个，FIFO 处理，winner 原子写入共享 metadata，其他结果保留；
 - `get_cowart_canvas.lineageTimeline` 和画布面板提供只读来源时间线。
 
-明确未交付：GPU sidecar、text segmentation、automatic agent segmentation、AI scene decomposition、full layer recovery、生产级 C2PA、video。它们仍是后续方向，不属于当前 `0.6.0` 的承诺。
+### Phase 8.3-8.4 已落地：Sidecar 与混合场景分解
+
+- Python 3.11 loopback Sidecar 固定依赖与模型 revision，显式 setup 并校验权重；
+- 单任务、队列上限二、CPU 最多四线程、MPS/CUDA/CPU 设备选择和五分钟空闲卸载；
+- point、box、text、automatic 分割；text 使用 Grounding DINO 找框，SAM 2 出蒙版；
+- MCP 候选默认不持久化，只有 `publish=true` 才写入 Segment Store；
+- 场景分解每次要求确认上传，默认仅请求 depth hint 和 clean plate；
+- 真实可见对象层与 AI 推测 artifact 分别标记，画布提供轻量 Decomposition Stack；
+- 遮挡补全必须先对生成候选执行 Sidecar SAM 2 二次分割和透明提取，并记录 `generatedSegmentId`。
+
+仍不交付完整 PSD 图层恢复、文字恢复、生产级 C2PA、video tracking 或直连 Image API。
 
 ## 4. 稳定落地原则
 
@@ -62,20 +74,20 @@ Phase 1 到 Phase 7 已完成结构化画布读取、批注解析、AI holder、
 2. 画布是状态真源：holder 请求保存在 shape meta；confirmed segment 保存在 Segment Store。
 3. 源图字节是对象蒙版真源：确认、校正、蒙版生成和写回都用 asset SHA-256 拒绝 stale 结果。
 4. 候选不持久化：浏览器内存中的候选预览不是 tldraw shape，也不是 Segment Store 记录。
-5. 浏览器本机优先：Phase 8 core 不上传源图。MediaPipe 模型和 WASM 从 `cdn.jsdelivr.net`、`storage.googleapis.com` 下载；tldraw 前端资源可能从 `cdn.tldraw.com` 读取。源图字节仍只来自 localhost，且没有外部 mutation。
+5. 浏览器本机优先：普通分割不上传源图。只有用户逐次确认的 scene decomposition 才把选定源图交给 Codex `image_gen`；MediaPipe 模型和 WASM 从 `cdn.jsdelivr.net`、`storage.googleapis.com` 下载。
 6. 明确限制：图像模型把 mask 当作 guidance。只有执行 `preserveOutside` 的结果才承诺蒙版值为 0 的解码 RGBA 字节不变。
 7. 文档和 skills 与工具面同步：版本、工具数、错误语义和隐私说明必须随代码更新。
 
 ## 5. 当前低风险项
 
 - 首次对象选择依赖网络下载 `@mediapipe/tasks-vision@0.10.35` WASM 和 Magic Touch 模型；离线时会失败并显示错误。
-- MediaPipe 点选对清晰单主体效果可用；笔刷能校正候选蒙版，但复杂边缘、透明材质和重叠对象仍需要 SAM 2 sidecar 与更多质量基准。
+- MediaPipe 与 SAM 2 对复杂边缘、透明材质和重叠对象仍需更多质量基准。
+- Sidecar 模型首次显式 setup 需要下载权重；Tiny 仍可能占用数 GB 内存，设备不可用时会明确降级 CPU。
+- depth hint 与 clean plate 都是 AI 推测，不能作为确认蒙版或原图恢复证据。
 - 目前没有记录完整模型质量 benchmark。现有证据只覆盖固定 CC0 fixture 的真实浏览器点选和 scribble。
 - Segment Store 手动删除需要谨慎。被后续修订引用的 segment 应保留。
 
 ## 6. 后续方向
 
-1. Phase 8.3：跨平台 SAM 2 / Grounding DINO sidecar、text segmentation 和 automatic agent segmentation。
-2. Phase 8.4：Codex `image_gen` 混合场景分解与 Decomposition Stack。
-3. Phase 8.5：基础 provenance export、C2PA 可行性评估。
-4. P2/P3：full layer recovery、可编辑文字和 video object tracking。
+1. Phase 8.5：基础 provenance export、C2PA 可行性评估。
+2. P2/P3：full layer recovery、可编辑文字和 video object tracking。

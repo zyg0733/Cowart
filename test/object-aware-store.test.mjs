@@ -315,7 +315,7 @@ test("Given a page id that resolves above the pages directory When the canvas is
 });
 
 test("Given a local image source When segments are confirmed refined listed fetched and deleted Then immutable store semantics hold without a canvas revision bump", async () => {
-  await withViteHarness(async ({ canvasDir, cowartUrl }) => {
+  await withViteHarness(async ({ cowartUrl }) => {
     await putSnapshot(cowartUrl, snapshot());
     const beforeRevision = (await getCanvas(cowartUrl)).revision;
 
@@ -355,7 +355,9 @@ test("Given a local image source When segments are confirmed refined listed fetc
     const deleteReferenced = await requestJson(`${cowartUrl}/api/canvas/segments/segment%3Afixture`, "DELETE");
     assert.equal(deleteReferenced.status, 409, JSON.stringify(deleteReferenced.body));
     assert.equal(deleteReferenced.body.code, "segment_referenced");
-    assert.ok((await tree(canvasDir)).some((file) => file.endsWith("segments/segment%3Afixture/manifest.json")));
+    const retained = await requestJson(`${cowartUrl}/api/canvas/segments/segment%3Afixture`, "GET");
+    assert.equal(retained.status, 200, JSON.stringify(retained.body));
+    assert.equal(retained.body.segment.segmentId, "segment:fixture");
   });
 });
 

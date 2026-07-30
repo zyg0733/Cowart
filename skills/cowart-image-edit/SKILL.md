@@ -116,8 +116,11 @@ ask one focused clarification question when multiple targets could be edited.
 
    If no confirmed segment exists, ask the user to use the canvas object tool to
    select and confirm the object. `segment_cowart_image` may return
-   `browser_interaction_required` when no real server provider is configured; do
-   not treat that as a failed generation or invent a segment.
+   `browser_interaction_required` when no Sidecar is configured; do not treat
+   that as a failed generation or invent a segment. With the loopback Sidecar it
+   returns local candidates by default. Only pass `publish: true` after an
+   explicit candidate choice, and never register an `image_gen` result as a
+   confirmed source mask.
 
    For rectangle-only edits, build the mask with `make_cowart_mask`:
 

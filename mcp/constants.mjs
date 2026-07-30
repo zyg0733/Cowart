@@ -1,5 +1,5 @@
 export const SERVER_NAME = "Cowart MCP";
-export const SERVER_VERSION = "0.6.0";
+export const SERVER_VERSION = "0.7.0";
 export const TOOL_GET_SELECTION = "get_cowart_selection";
 export const TOOL_INSERT_IMAGE = "insert_cowart_image";
 export const TOOL_GET_CANVAS = "get_cowart_canvas";
@@ -17,6 +17,8 @@ export const TOOL_REFINE_SEGMENT = "refine_cowart_segment";
 export const TOOL_EXTRACT_OBJECT = "extract_cowart_object";
 export const TOOL_CREATE_VARIANT_GRID = "create_cowart_variant_grid";
 export const TOOL_SELECT_VARIANT = "select_cowart_variant";
+export const TOOL_CREATE_DECOMPOSITION = "create_cowart_decomposition";
+export const TOOL_PUBLISH_DECOMPOSITION_ARTIFACT = "publish_cowart_decomposition_artifact";
 export const AI_IMAGE_HOLDER_STATUSES = ["empty", "requested", "generating", "failed", "filled"];
 export const AI_IMAGE_HOLDER_LABEL = "AI 图片";
 export const AI_IMAGE_HOLDER_DEFAULT_W = 320;

@@ -10,6 +10,7 @@ import {
 import { codedError } from "./object-aware-errors.mjs";
 import { segmentStoreForArgs, segmentSummary, validateSegmentSource } from "./object-aware-segments.mjs";
 import { hashBuffer } from "./object-aware-source.mjs";
+import { callSegmentationSidecar, sidecarIsConfigured } from "./sidecar-client.mjs";
 
 export async function segmentEditMaskMaterial(args, segment, source, deps) {
   const segmentId = segment.segmentId;
@@ -143,16 +144,87 @@ export async function refineCowartSegment(args = {}, deps) {
 export async function segmentCowartImage(args = {}, deps) {
   const { snapshot } = await deps.loadCanvasSnapshot(args);
   const targetShapeId = deps.nonEmptyString(args.targetShapeId) || deps.nonEmptyString(args.shapeId);
-  if (targetShapeId) {
-    const target = deps.resolveImageLikeShape(snapshot.store, deps.getRecord(snapshot.store, targetShapeId, "target shape"), { label: "Segmentation target" });
-    if (!target) codedError("invalid_target", "Segmentation target is not an image.", 400, { targetShapeId });
+  if (!targetShapeId) codedError("missing_target_shape", "targetShapeId is required.", 400);
+  const target = deps.resolveImageLikeShape(snapshot.store, deps.getRecord(snapshot.store, targetShapeId, "target shape"), { label: "Segmentation target" });
+  if (!target) codedError("invalid_target", "Segmentation target is not an image.", 400, { targetShapeId });
+  if (!sidecarIsConfigured(args)) {
+    return {
+      status: "browser_interaction_required",
+      code: "browser_interaction_required",
+      provider: "browser-local",
+      instructions:
+        "Use the canvas object tool to create and confirm a segment in the browser, or configure the loopback Cowart Sidecar. No synthetic segment was created.",
+      targetShapeId,
+      requestedMode: args.mode ?? "point",
+    };
   }
+  const source = await deps.currentSourceIdentity(snapshot.store, target, deps.resolveCanvasDir(args));
+  const expectedHash = deps.nonEmptyString(args.expectedSourceAssetHash) || deps.nonEmptyString(args.expectedSourceSha256);
+  if (expectedHash && expectedHash !== source.assetSha256) {
+    codedError("source_asset_changed", "Source asset changed before segmentation.", 409, {
+      expectedSourceAssetHash: expectedHash,
+      currentSourceAssetHash: source.assetSha256,
+    });
+  }
+  const sourceBytes = await readFile(source.sourceFile);
+  const sidecar = await callSegmentationSidecar(args, sourceBytes, source);
+  const publicSource = {
+    pageId: source.pageId,
+    shapeId: source.shapeId,
+    assetId: source.assetId,
+    assetSha256: source.assetSha256,
+    width: source.width,
+    height: source.height,
+  };
+  const result = {
+    status: "candidates_ready",
+    targetShapeId,
+    source: publicSource,
+    requestedMode: args.mode ?? "point",
+    provider: sidecar.provider,
+    candidates: sidecar.publicCandidates,
+    published: false,
+  };
+  if (args.publish !== true) return result;
+  const candidateIndex = Math.round(Number(args.candidateIndex) || 0);
+  const chosen = sidecar.candidates[candidateIndex];
+  if (!chosen) codedError("invalid_candidate_index", "candidateIndex does not identify a returned sidecar candidate.", 400, { candidateIndex });
+  const { snapshot: latest } = await deps.loadCanvasSnapshot(args);
+  const latestTarget = deps.resolveImageLikeShape(latest.store, deps.getRecord(latest.store, targetShapeId, "target shape"), { label: "Segmentation target" });
+  const current = await deps.currentSourceIdentity(latest.store, latestTarget, deps.resolveCanvasDir(args));
+  if (
+    current.pageId !== source.pageId ||
+    current.assetId !== source.assetId ||
+    current.assetSha256 !== source.assetSha256 ||
+    current.width !== source.width ||
+    current.height !== source.height
+  ) {
+    codedError("source_asset_changed", "Source asset changed while Sidecar segmentation was running.", 409, {
+      expectedSourceAssetHash: source.assetSha256,
+      currentSourceAssetHash: current.assetSha256,
+    });
+  }
+  const segmentId = deps.nonEmptyString(args.segmentId) || newSegmentId(args.mode || "sidecar", deps.sanitizeIdPart);
+  const segment = await segmentStoreForArgs(args, deps.resolveCanvasDir).confirm({
+    segmentId,
+    pageId: source.pageId,
+    source: publicSource,
+    maskPng: chosen.maskPng,
+    previewPng: chosen.maskPng,
+    selection: {
+      mode: args.mode ?? "point",
+      points: Array.isArray(args.points) ? args.points : undefined,
+      box: args.box ?? undefined,
+      prompt: deps.nonEmptyString(args.prompt),
+      candidateIndex,
+    },
+    provider: sidecar.provider,
+  });
   return {
-    status: "browser_interaction_required",
-    code: "browser_interaction_required",
-    provider: "browser-local",
-    instructions:
-      "Use the canvas object tool to create and confirm a segment in the browser. This MCP server has no configured real server-side segmentation provider and will not return fake segments.",
-    targetShapeId: targetShapeId ?? null,
+    ...result,
+    status: "published",
+    published: true,
+    candidateIndex,
+    segment: segmentSummary(segment),
   };
 }

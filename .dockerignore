@@ -1,0 +1,11 @@
+.git
+.codex
+.omo
+AGENTS.md
+node_modules
+dist
+canvas
+sidecar/.models
+sidecar/.uv-cache
+sidecar/.venv
+sidecar/**/__pycache__

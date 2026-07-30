@@ -1,4 +1,5 @@
 const SEGMENTS_ENDPOINT = '/api/canvas/segments'
+const SIDECAR_ENDPOINT = '/api/canvas/sidecar/segment'
 
 export class ObjectEditApiError extends Error {
   constructor(message, { status = 0, code = 'object_edit_api_error', details = {} } = {}) {
@@ -101,4 +102,8 @@ export async function refineObjectSegment(api, segmentId, payload) {
 
 export async function deleteObjectSegment(api, segmentId) {
   return requestJson(api, `${SEGMENTS_ENDPOINT}/${encodeSegmentId(segmentId)}`, { method: 'DELETE' })
+}
+
+export async function segmentObjectWithSidecar(api, payload) {
+  return requestJson(api, SIDECAR_ENDPOINT, { method: 'POST', body: payload })
 }

@@ -1,0 +1,29 @@
+[project]
+name = "cowart-sidecar"
+version = "0.7.0"
+description = "Loopback-only local segmentation service for Cowart"
+requires-python = "==3.11.*"
+dependencies = [
+  "fastapi==0.140.0",
+  "pillow==12.1.0",
+  "uvicorn==0.51.0",
+]
+
+[project.optional-dependencies]
+models = [
+  "torch==2.13.0",
+  "torchvision==0.28.0",
+  "transformers==5.14.1",
+]
+
+[dependency-groups]
+dev = [
+  "httpx==0.28.1",
+]
+
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cowart_sidecar"]

@@ -1,5 +1,6 @@
 import {
   TOOL_ADD_SHAPES,
+  TOOL_CREATE_DECOMPOSITION,
   TOOL_CREATE_HOLDER,
   TOOL_CREATE_VARIANT_GRID,
   TOOL_EXPORT_VIEW,
@@ -11,6 +12,7 @@ import {
   TOOL_GET_SELECTION,
   TOOL_INSERT_IMAGE,
   TOOL_MAKE_MASK,
+  TOOL_PUBLISH_DECOMPOSITION_ARTIFACT,
   TOOL_REFINE_SEGMENT,
   TOOL_REPLACE_IMAGE,
   TOOL_SEGMENT_IMAGE,
@@ -28,6 +30,7 @@ import { makeCowartMask } from "./mask-tool.mjs";
 import { extractCowartObject } from "./object-actions.mjs";
 import { replaceCowartImage } from "./replace-image.mjs";
 import { createCowartVariantGrid, selectCowartVariant } from "./variant-tools.mjs";
+import { createCowartDecomposition, publishCowartDecompositionArtifact } from "./decomposition-tools.mjs";
 import { sendError, sendResult, JsonRpcError } from "./transport.mjs";
 
 const objectAwareDeps = createObjectAwareDeps(loadCanvasSnapshot, getRecord);
@@ -49,6 +52,8 @@ export async function handleToolCall(id, params) {
   if (params?.name === TOOL_EXTRACT_OBJECT) return sendExtractObject(id, toolArgs);
   if (params?.name === TOOL_CREATE_VARIANT_GRID) return sendCreateVariantGrid(id, toolArgs);
   if (params?.name === TOOL_SELECT_VARIANT) return sendSelectVariant(id, toolArgs);
+  if (params?.name === TOOL_CREATE_DECOMPOSITION) return sendCreateDecomposition(id, toolArgs);
+  if (params?.name === TOOL_PUBLISH_DECOMPOSITION_ARTIFACT) return sendPublishDecompositionArtifact(id, toolArgs);
   if (params?.name === TOOL_UPDATE_HOLDER) return sendUpdateHolder(id, toolArgs);
   if (params?.name === TOOL_GET_REFERENCES) return sendReferences(id, toolArgs);
   sendError(id, JsonRpcError.INVALID_PARAMS, `Unknown tool: ${params?.name ?? ""}`);
@@ -129,7 +134,12 @@ async function sendMakeMask(id, toolArgs) {
 
 async function sendSegmentImage(id, toolArgs) {
   const result = await segmentCowartImageTool(toolArgs, objectAwareDeps);
-  sendResult(id, { content: [{ type: "text", text: "Browser interaction is required to create a confirmed object segment." }], structuredContent: result }, toolArgs);
+  const text = result.status === "browser_interaction_required"
+    ? "Browser interaction or a configured loopback Cowart Sidecar is required."
+    : result.published
+      ? `Published ${result.segment.segmentId} from Sidecar candidate ${result.candidateIndex + 1}.`
+      : `Cowart Sidecar returned ${result.candidates.length} candidate(s); none were published.`;
+  sendResult(id, { content: [{ type: "text", text }], structuredContent: result }, toolArgs);
 }
 
 async function sendRefineSegment(id, toolArgs) {
@@ -161,13 +171,29 @@ async function sendSelectVariant(id, toolArgs) {
   }, toolArgs);
 }
 
+async function sendCreateDecomposition(id, toolArgs) {
+  const result = await createCowartDecomposition(toolArgs, objectAwareDeps);
+  sendResult(id, {
+    content: [{ type: "text", text: `${result.dryRun ? "Planned" : result.idempotent ? "Found" : "Created"} scene decomposition ${result.decomposition.id} in holder ${result.holderId}; upload was explicitly confirmed.` }],
+    structuredContent: result,
+  }, toolArgs);
+}
+
+async function sendPublishDecompositionArtifact(id, toolArgs) {
+  const result = await publishCowartDecompositionArtifact(toolArgs, objectAwareDeps);
+  sendResult(id, {
+    content: [{ type: "text", text: `${result.dryRun ? "Planned" : result.idempotent ? "Found" : "Published"} ${result.artifact.kind} for ${result.decomposition.id}; status=${result.decomposition.status}.` }],
+    structuredContent: result,
+  }, toolArgs);
+}
+
 async function sendUpdateHolder(id, toolArgs) {
   const result = await updateCowartHolder(toolArgs);
   sendResult(id, { content: [{ type: "text", text: `${result.dryRun ? "Planned update for" : "Updated"} holder ${result.holderId}: status=${result.status}${result.prompt ? `, prompt="${result.prompt}"` : ""}${result.references ? `, refs=${result.references.length}` : ""}.` }], structuredContent: result }, toolArgs);
 }
 
 async function sendReferences(id, toolArgs) {
-  const result = await getCowartReferences(toolArgs);
+  const result = await getCowartReferences(toolArgs, objectAwareDeps);
   const summary = result.references.map((reference) => `${reference.id} [${reference.role ?? "?"}]${reference.found === false ? " (missing)" : reference.assetFile ? "" : " (no local file)"}`).join("\n");
   sendResult(id, { content: [{ type: "text", text: summary || "No references." }], structuredContent: result }, toolArgs);
 }

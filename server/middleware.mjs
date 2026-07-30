@@ -13,6 +13,7 @@ import { canvasPagesDir, selectionFile, viewStateFile } from './config.mjs'
 import { isSelectionState, isSnapshot, isViewState, readRequestBody, sendError, sendJson } from './http.mjs'
 import { broadcastCanvasChanged, broadcastSegmentChanged, hasCanvasEventClients, registerCanvasEventsRoute, requestCanvasExport, resolveCanvasExport } from './sse.mjs'
 import { createSegmentRouteHandler, validateRecordConditions } from './source-segment-routes.mjs'
+import { createSidecarProxyHandler } from './sidecar-proxy-routes.mjs'
 
 const segmentStore = createSegmentStore({ pagesDir: canvasPagesDir })
 const handleSegmentRoute = createSegmentRouteHandler({
@@ -21,6 +22,7 @@ const handleSegmentRoute = createSegmentRouteHandler({
   withCanvasWriteLock,
   broadcastSegmentChanged
 })
+const handleSidecarProxy = createSidecarProxyHandler({ loadCanvasSnapshot })
 
 export function registerCowartMiddlewares(middlewares) {
   middlewares.use(serveCanvasAsset)
@@ -152,6 +154,7 @@ export function registerCowartMiddlewares(middlewares) {
   })
 
   middlewares.use('/api/canvas/segments', handleSegmentRoute)
+  middlewares.use('/api/canvas/sidecar/segment', handleSidecarProxy)
 
   middlewares.use('/api/canvas/records', async (req, res) => {
     try {

@@ -136,3 +136,51 @@ export const selectVariantTool = {
   }),
   annotations: idempotentWriteAnnotations,
 };
+
+export const createDecompositionTool = {
+  name: "create_cowart_decomposition",
+  title: "Create Cowart Scene Decomposition",
+  description: "Create one explicitly upload-confirmed scene_decomposition request for Codex image_gen. The default request asks for a relative grayscale depth hint and a clean plate. Confirmed Segment Store masks remain the only authoritative object masks.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    segmentIds: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" }, description: "Confirmed segments from one current source image." },
+    confirmUpload: { type: "boolean", description: "Must be true for every request. Confirms source image upload to Codex image_gen." },
+    decompositionId: { type: "string", description: "Optional caller-stable id for idempotent creation." },
+    requestId: { type: "string", description: "Optional caller-stable FIFO request id." },
+    requestedAt: { type: "string", description: "Optional ISO request time." },
+    prompt: { type: "string", description: "Optional scene-analysis instructions. Defaults to depth hint plus clean plate." },
+    placement: { type: "string", enum: ["right", "left", "below"], description: "Coordinator holder placement. Defaults to right." },
+    margin: { type: "number", description: "Canvas gap from the source. Defaults to 40." },
+    width: { type: "number", description: "Coordinator holder width. Defaults to source display width." },
+    height: { type: "number", description: "Coordinator holder height. Defaults to source aspect ratio." },
+    expectedSourceAssetHash: { type: "string", description: "Require the source bytes to match this SHA-256." },
+    dryRun: { type: "boolean", description: "Validate and plan without saving." },
+  }, { required: ["segmentIds", "confirmUpload"] }),
+  annotations: writeAnnotations,
+};
+
+export const publishDecompositionArtifactTool = {
+  name: "publish_cowart_decomposition_artifact",
+  title: "Publish Cowart Decomposition Artifact",
+  description: "Attach an existing local image shape to a scene decomposition manifest. Artifact kind, source hash, segment membership, provider and synthetic provenance are validated server-side. AI output is never accepted as an authoritative confirmed mask.",
+  inputSchema: objectSchema({
+    projectDir: projectDirProperty,
+    canvasDir: canvasDirProperty,
+    cowartUrl: cowartUrlProperty,
+    decompositionId: { type: "string", description: "Existing decomposition id." },
+    kind: { type: "string", enum: ["depth_hint", "clean_plate", "visible_object_layer", "completed_object", "composite"], description: "Controlled artifact type." },
+    imageShapeId: { type: "string", description: "Existing local image or filled image holder containing the artifact." },
+    shapeId: { type: "string", description: "Alias for imageShapeId." },
+    sourceSegmentIds: { type: "array", maxItems: 32, items: { type: "string" }, description: "Confirmed source segments represented by this artifact." },
+    generatedSegmentId: { type: "string", description: "For completed_object, the confirmed SAM 2 Sidecar segment on the generated candidate used by extract_cowart_object." },
+    prompt: { type: "string", description: "Prompt used for an AI-derived artifact." },
+    model: { type: "string", description: "Codex-managed image model label when exposed. Provider is always codex-image_gen for AI artifacts." },
+    sceneGraph: { type: "object", description: "Optional bounded scene graph with objects, ordering, relations, visibility, and segmentId mappings." },
+    createdAt: { type: "string", description: "Optional artifact creation time." },
+    completedAt: { type: "string", description: "Optional completion time once both default artifacts exist." },
+    dryRun: { type: "boolean", description: "Validate and plan without saving." },
+  }, { required: ["decompositionId", "kind", "imageShapeId"] }),
+  annotations: idempotentWriteAnnotations,
+};
